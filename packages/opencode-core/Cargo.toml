@@ -1,0 +1,43 @@
+[package]
+name = "opencode-core"
+version = "0.1.0"
+edition = "2021"
+description = "High-performance core utilities for OpenCode"
+authors = ["OpenCode Team"]
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+napi = { version = "2", features = ["serde-json"] }
+napi-derive = "2"
+
+walkdir = "2"
+ignore = "0.4"
+notify = { version = "8", default-features = false, features = ["macos_kqueue"] }
+memmap2 = "0.9"
+
+zip = "2"
+flate2 = "1"
+
+bincode = "1"
+serde = { version = "1", features = ["derive"] }
+
+tiktoken-rs = "0.5"
+
+rayon = "1"
+tokio = { version = "1", features = ["rt", "sync", "fs"] }
+
+tracing = "0.1"
+tracing-subscriber = "0.3"
+anyhow = "1"
+thiserror = "1"
+uuid = { version = "1", features = ["v4"] }
+tar = "0.4"
+
+[profile.release]
+lto = true
+opt-level = 3
+codegen-units = 1
+strip = true

@@ -1,0 +1,31 @@
+{
+  "name": "@opencode-ai/core",
+  "version": "0.1.0",
+  "description": "High-performance core utilities for OpenCode",
+  "main": "npm/index.js",
+  "types": "npm/index.d.ts",
+  "napi": {
+    "name": "opencode-core",
+    "targets": [
+      "x86_64-unknown-linux-musl",
+      "aarch64-unknown-linux-gnu",
+      "x86_64-apple-darwin",
+      "aarch64-apple-darwin",
+      "x86_64-pc-windows-msvc",
+      "aarch64-pc-windows-msvc"
+    ]
+  },
+  "scripts": {
+    "build": "cargo build --release",
+    "build:debug": "cargo build",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "opencode",
+    "napi",
+    "rust",
+    "performance"
+  ],
+  "author": "OpenCode Team",
+  "license": "MIT"
+}
