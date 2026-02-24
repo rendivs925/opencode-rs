@@ -24,14 +24,16 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Bun
-        uses: ./.github/actions/setup-bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
       - name: Build native module
         working-directory: packages/opencode-core
-        run: bunx @napi-rs/cli build --release --platform
+        run: bunx --bun @napi-rs/cli@latest build --release --platform
 
       - name: Run native benchmark
         working-directory: packages/opencode-core
