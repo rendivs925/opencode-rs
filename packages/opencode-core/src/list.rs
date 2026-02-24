@@ -69,6 +69,24 @@ pub fn list_directory(
     Ok(nodes)
 }
 
+#[napi]
+pub fn list_directory_project(
+    dir: String,
+    base: String,
+    worktree: String,
+    exclude: Option<Vec<String>>,
+) -> Result<Vec<ListEntry>> {
+    let mut patterns = Vec::new();
+    for file in [".gitignore", ".ignore"] {
+        let text = std::fs::read_to_string(Path::new(&worktree).join(file)).unwrap_or_default();
+        if text.is_empty() {
+            continue;
+        }
+        patterns.extend(text.lines().map(|line| line.to_string()));
+    }
+    list_directory(dir, base, exclude, Some(patterns))
+}
+
 fn build_matcher(patterns: &[String]) -> Result<Option<Gitignore>> {
     if patterns.is_empty() {
         return Ok(None);

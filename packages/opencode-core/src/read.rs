@@ -65,6 +65,23 @@ pub struct ReadAttachment {
     pub base64: Option<String>,
 }
 
+#[napi(object)]
+#[derive(Clone)]
+pub struct ReadFullResult {
+    pub kind: String,
+    pub exists: bool,
+    pub content: String,
+    pub mime_type: Option<String>,
+    pub encoding: Option<String>,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct UntrackedLineCount {
+    pub path: String,
+    pub lines: i32,
+}
+
 #[napi]
 pub fn classify_read_target(path: String, hint_path: Option<String>) -> Result<ReadTargetClassification> {
     let path_obj = Path::new(&path);
@@ -158,6 +175,64 @@ pub fn read_attachment(path: String) -> Result<ReadAttachment> {
         mime_type: Some(mime),
         base64: Some(base64::engine::general_purpose::STANDARD.encode(bytes)),
     })
+}
+
+#[napi]
+pub fn read_full(path: String, hint_path: Option<String>) -> Result<ReadFullResult> {
+    let classification = classify_read_target(path.clone(), hint_path)?;
+    if !classification.exists {
+        return Ok(ReadFullResult {
+            kind: "text".to_string(),
+            exists: false,
+            content: String::new(),
+            mime_type: None,
+            encoding: None,
+        });
+    }
+
+    if classification.mode == "binary" {
+        return Ok(ReadFullResult {
+            kind: "binary".to_string(),
+            exists: true,
+            content: String::new(),
+            mime_type: classification.mime_type,
+            encoding: None,
+        });
+    }
+
+    let bytes = std::fs::read(Path::new(&path)).unwrap_or_default();
+    if classification.mode == "base64" {
+        return Ok(ReadFullResult {
+            kind: "text".to_string(),
+            exists: true,
+            content: base64::engine::general_purpose::STANDARD.encode(bytes),
+            mime_type: classification.mime_type,
+            encoding: Some("base64".to_string()),
+        });
+    }
+
+    Ok(ReadFullResult {
+        kind: "text".to_string(),
+        exists: true,
+        content: String::from_utf8_lossy(&bytes).trim().to_string(),
+        mime_type: None,
+        encoding: None,
+    })
+}
+
+#[napi]
+pub fn count_untracked_lines(root: String, files: Vec<String>) -> Result<Vec<UntrackedLineCount>> {
+    let out = files
+        .into_iter()
+        .filter_map(|item| {
+            let full = Path::new(&root).join(&item);
+            let bytes = std::fs::read(full).ok()?;
+            let text = String::from_utf8_lossy(&bytes);
+            let lines = text.split('\n').count() as i32;
+            Some(UntrackedLineCount { path: item, lines })
+        })
+        .collect();
+    Ok(out)
 }
 
 #[napi]

@@ -77,6 +77,32 @@ declare module "@opencode-ai/core" {
   export function clearCache(cacheDir: string): void
   export function deleteCache(cacheDir: string, key: string): void
 
+  export function listDirectoryProject(
+    dir: string,
+    base: string,
+    worktree: string,
+    exclude?: string[],
+  ): Array<{
+    name: string
+    path: string
+    absolute: string
+    entryType: "file" | "directory"
+    ignored: boolean
+  }>
+
+  export function readFull(
+    path: string,
+    hintPath?: string,
+  ): {
+    kind: "text" | "binary"
+    exists: boolean
+    content: string
+    mimeType?: string
+    encoding?: "base64"
+  }
+
+  export function countUntrackedLines(root: string, files: string[]): Array<{ path: string; lines: number }>
+
   export type NativeFileEvent = {
     path: string
     kind: string
@@ -85,7 +111,7 @@ declare module "@opencode-ai/core" {
   export class FileWatcher {
     watch(path: string): void
     unwatch(): void
-    nextEvent(): NativeFileEvent | null | undefined
+    nextEvents(limit?: number, ignorePatterns?: string[]): NativeFileEvent[]
   }
 
   export class CompiledIgnore {

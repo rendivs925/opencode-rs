@@ -5,11 +5,10 @@ import { formatPatch, structuredPatch } from "diff"
 import path from "path"
 import fs from "fs"
 import { Log } from "../util/log"
-import { Filesystem } from "../util/filesystem"
 import { Instance } from "../project/instance"
 import fuzzysort from "fuzzysort"
 import { Global } from "../global"
-import { classifyReadTarget, indexPathsCached, listDirectory, searchPaths } from "@/core/native"
+import { countUntrackedLines, indexPathsCached, listDirectory, listDirectoryProject, readFull, searchPaths } from "@/core/native"
 
 export namespace File {
   const log = Log.create({ service: "file" })
@@ -70,256 +69,6 @@ export namespace File {
       ref: "FileContent",
     })
   export type Content = z.infer<typeof Content>
-
-  const binaryExtensions = new Set([
-    "exe",
-    "dll",
-    "pdb",
-    "bin",
-    "so",
-    "dylib",
-    "o",
-    "a",
-    "lib",
-    "wav",
-    "mp3",
-    "ogg",
-    "oga",
-    "ogv",
-    "ogx",
-    "flac",
-    "aac",
-    "wma",
-    "m4a",
-    "weba",
-    "mp4",
-    "avi",
-    "mov",
-    "wmv",
-    "flv",
-    "webm",
-    "mkv",
-    "zip",
-    "tar",
-    "gz",
-    "gzip",
-    "bz",
-    "bz2",
-    "bzip",
-    "bzip2",
-    "7z",
-    "rar",
-    "xz",
-    "lz",
-    "z",
-    "pdf",
-    "doc",
-    "docx",
-    "ppt",
-    "pptx",
-    "xls",
-    "xlsx",
-    "dmg",
-    "iso",
-    "img",
-    "vmdk",
-    "ttf",
-    "otf",
-    "woff",
-    "woff2",
-    "eot",
-    "sqlite",
-    "db",
-    "mdb",
-    "apk",
-    "ipa",
-    "aab",
-    "xapk",
-    "app",
-    "pkg",
-    "deb",
-    "rpm",
-    "snap",
-    "flatpak",
-    "appimage",
-    "msi",
-    "msp",
-    "jar",
-    "war",
-    "ear",
-    "class",
-    "kotlin_module",
-    "dex",
-    "vdex",
-    "odex",
-    "oat",
-    "art",
-    "wasm",
-    "wat",
-    "bc",
-    "ll",
-    "s",
-    "ko",
-    "sys",
-    "drv",
-    "efi",
-    "rom",
-    "com",
-    "cmd",
-    "ps1",
-    "sh",
-    "bash",
-    "zsh",
-    "fish",
-  ])
-
-  const imageExtensions = new Set([
-    "png",
-    "jpg",
-    "jpeg",
-    "gif",
-    "bmp",
-    "webp",
-    "ico",
-    "tif",
-    "tiff",
-    "svg",
-    "svgz",
-    "avif",
-    "apng",
-    "jxl",
-    "heic",
-    "heif",
-    "raw",
-    "cr2",
-    "nef",
-    "arw",
-    "dng",
-    "orf",
-    "raf",
-    "pef",
-    "x3f",
-  ])
-
-  const textExtensions = new Set([
-    "ts",
-    "tsx",
-    "mts",
-    "cts",
-    "mtsx",
-    "ctsx",
-    "js",
-    "jsx",
-    "mjs",
-    "cjs",
-    "sh",
-    "bash",
-    "zsh",
-    "fish",
-    "ps1",
-    "psm1",
-    "cmd",
-    "bat",
-    "json",
-    "jsonc",
-    "json5",
-    "yaml",
-    "yml",
-    "toml",
-    "md",
-    "mdx",
-    "txt",
-    "xml",
-    "html",
-    "htm",
-    "css",
-    "scss",
-    "sass",
-    "less",
-    "graphql",
-    "gql",
-    "sql",
-    "ini",
-    "cfg",
-    "conf",
-    "env",
-  ])
-
-  const textNames = new Set([
-    "dockerfile",
-    "makefile",
-    ".gitignore",
-    ".gitattributes",
-    ".editorconfig",
-    ".npmrc",
-    ".nvmrc",
-    ".prettierrc",
-    ".eslintrc",
-  ])
-
-  function isImageByExtension(filepath: string): boolean {
-    const ext = path.extname(filepath).toLowerCase().slice(1)
-    return imageExtensions.has(ext)
-  }
-
-  function isTextByExtension(filepath: string): boolean {
-    const ext = path.extname(filepath).toLowerCase().slice(1)
-    return textExtensions.has(ext)
-  }
-
-  function isTextByName(filepath: string): boolean {
-    const name = path.basename(filepath).toLowerCase()
-    return textNames.has(name)
-  }
-
-  function getImageMimeType(filepath: string): string {
-    const ext = path.extname(filepath).toLowerCase().slice(1)
-    const mimeTypes: Record<string, string> = {
-      png: "image/png",
-      jpg: "image/jpeg",
-      jpeg: "image/jpeg",
-      gif: "image/gif",
-      bmp: "image/bmp",
-      webp: "image/webp",
-      ico: "image/x-icon",
-      tif: "image/tiff",
-      tiff: "image/tiff",
-      svg: "image/svg+xml",
-      svgz: "image/svg+xml",
-      avif: "image/avif",
-      apng: "image/apng",
-      jxl: "image/jxl",
-      heic: "image/heic",
-      heif: "image/heif",
-    }
-    return mimeTypes[ext] || "image/" + ext
-  }
-
-  function isBinaryByExtension(filepath: string): boolean {
-    const ext = path.extname(filepath).toLowerCase().slice(1)
-    return binaryExtensions.has(ext)
-  }
-
-  function isImage(mimeType: string): boolean {
-    return mimeType.startsWith("image/")
-  }
-
-  async function shouldEncode(mimeType: string): Promise<boolean> {
-    const type = mimeType.toLowerCase()
-    log.info("shouldEncode", { type })
-    if (!type) return false
-
-    if (type.startsWith("text/")) return false
-    if (type.includes("charset=")) return false
-
-    const parts = type.split("/", 2)
-    const top = parts[0]
-
-    const tops = ["image", "audio", "video", "font", "model", "multipart"]
-    if (tops.includes(top)) return true
-
-    return false
-  }
 
   export const Event = {
     Edited: BusEvent.define(
@@ -435,19 +184,13 @@ export namespace File {
 
     if (untrackedOutput.trim()) {
       const untrackedFiles = untrackedOutput.trim().split("\n")
-      for (const filepath of untrackedFiles) {
-        try {
-          const content = await Filesystem.readText(path.join(Instance.directory, filepath))
-          const lines = content.split("\n").length
-          changedFiles.push({
-            path: filepath,
-            added: lines,
-            removed: 0,
-            status: "added",
-          })
-        } catch {
-          continue
-        }
+      for (const item of countUntrackedLines(Instance.directory, untrackedFiles)) {
+        changedFiles.push({
+          path: item.path,
+          added: item.lines,
+          removed: 0,
+          status: "added",
+        })
       }
     }
 
@@ -490,25 +233,13 @@ export namespace File {
       throw new Error(`Access denied: path escapes project directory`)
     }
 
-    const classification = classifyReadTarget(full, file)
-    if (classification.mode === "binary") {
-      if (classification.mimeType) {
-        return { type: "binary", content: "", mimeType: classification.mimeType }
-      }
-      return { type: "binary", content: "" }
+    const native = readFull(full, file)
+    if (!native.exists) return { type: "text", content: "" }
+    if (native.kind === "binary") return { type: "binary", content: "", mimeType: native.mimeType }
+    const content = native.content
+    if (native.encoding === "base64") {
+      return { type: "text", content, mimeType: native.mimeType, encoding: "base64" }
     }
-
-    if (!classification.exists) {
-      return { type: "text", content: "" }
-    }
-
-    if (classification.mode === "base64") {
-      const buffer = await Filesystem.readBytes(full).catch(() => Buffer.from([]))
-      const content = buffer.toString("base64")
-      return { type: "text", content, mimeType: classification.mimeType, encoding: "base64" }
-    }
-
-    const content = (await Filesystem.readText(full).catch(() => "")).trim()
 
     if (project.vcs === "git") {
       let diff = await $`git diff ${file}`.cwd(Instance.directory).quiet().nothrow().text()
@@ -529,17 +260,6 @@ export namespace File {
   export async function list(dir?: string) {
     const exclude = [".git", ".DS_Store"]
     const project = Instance.project
-    const patterns: string[] = []
-    if (project.vcs === "git") {
-      const gitignorePath = path.join(Instance.worktree, ".gitignore")
-      if (await Filesystem.exists(gitignorePath)) {
-        patterns.push(...(await Filesystem.readText(gitignorePath)).split(/\r?\n/))
-      }
-      const ignorePath = path.join(Instance.worktree, ".ignore")
-      if (await Filesystem.exists(ignorePath)) {
-        patterns.push(...(await Filesystem.readText(ignorePath)).split(/\r?\n/))
-      }
-    }
     const resolved = dir ? path.join(Instance.directory, dir) : Instance.directory
 
     // TODO: Filesystem.contains is lexical only - symlinks inside the project can escape.
@@ -548,7 +268,11 @@ export namespace File {
       throw new Error(`Access denied: path escapes project directory`)
     }
 
-    return listDirectory(resolved, Instance.directory, exclude, patterns).map((entry) => {
+    const entries =
+      project.vcs === "git"
+        ? listDirectoryProject(resolved, Instance.directory, Instance.worktree, exclude)
+        : listDirectory(resolved, Instance.directory, exclude)
+    return entries.map((entry) => {
       return {
         name: entry.name,
         path: entry.path,

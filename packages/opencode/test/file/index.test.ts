@@ -241,6 +241,30 @@ describe("file/index Filesystem patterns", () => {
         },
       })
     })
+
+    test("marks entries ignored via project ignore files", async () => {
+      await using tmp = await tmpdir({
+        git: true,
+        init: async (dir) => {
+          await fs.writeFile(path.join(dir, ".gitignore"), "dist\n", "utf-8")
+          await fs.mkdir(path.join(dir, "dist"), { recursive: true })
+          await fs.mkdir(path.join(dir, "src"), { recursive: true })
+          await fs.writeFile(path.join(dir, "dist", "a.txt"), "a", "utf-8")
+          await fs.writeFile(path.join(dir, "src", "b.txt"), "b", "utf-8")
+        },
+      })
+
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const nodes = await File.list()
+          const dist = nodes.find((item) => item.path === "dist")
+          const src = nodes.find((item) => item.path === "src")
+          expect(dist?.ignored).toBe(true)
+          expect(src?.ignored).toBe(false)
+        },
+      })
+    })
   })
 
   describe("File.changed() - Filesystem.readText() for untracked files", () => {
@@ -257,6 +281,26 @@ describe("file/index Filesystem patterns", () => {
           const content = await Filesystem.readText(untrackedPath)
           const lines = content.split("\n").length
           expect(lines).toBe(2)
+        },
+      })
+    })
+
+    test("reports untracked file line counts", async () => {
+      await using tmp = await tmpdir({
+        git: true,
+        init: async (dir) => {
+          await fs.writeFile(path.join(dir, "tracked.txt"), "tracked\n", "utf-8")
+        },
+      })
+
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          await fs.writeFile(path.join(tmp.path, "new.txt"), "a\nb\nc", "utf-8")
+          const items = await File.status()
+          const found = items.find((item) => item.path === "new.txt")
+          expect(found?.status).toBe("added")
+          expect(found?.added).toBe(3)
         },
       })
     })

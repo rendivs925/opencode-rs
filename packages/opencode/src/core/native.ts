@@ -79,7 +79,6 @@ export const deleteCache = core.deleteCache as (cacheDir: string, key: string) =
 export const FileWatcher = core.FileWatcher as new () => {
   watch(path: string): void
   unwatch(): void
-  nextEvent(): { path: string; kind: string } | null | undefined
   nextEvents(limit?: number, ignorePatterns?: string[]): { path: string; kind: "add" | "change" | "unlink" }[]
 }
 
@@ -97,6 +96,19 @@ export const listDirectory = core.listDirectory as (
   base: string,
   exclude?: string[],
   ignorePatterns?: string[],
+) => {
+  name: string
+  path: string
+  absolute: string
+  entryType: "file" | "directory"
+  ignored: boolean
+}[]
+
+export const listDirectoryProject = core.listDirectoryProject as (
+  dir: string,
+  base: string,
+  worktree: string,
+  exclude?: string[],
 ) => {
   name: string
   path: string
@@ -238,6 +250,22 @@ export const classifyReadTarget = core.classifyReadTarget as (
   exists: boolean
   mimeType?: string
 }
+
+export const readFull = core.readFull as (
+  path: string,
+  hintPath?: string,
+) => {
+  kind: "text" | "binary"
+  exists: boolean
+  content: string
+  mimeType?: string
+  encoding?: "base64"
+}
+
+export const countUntrackedLines = core.countUntrackedLines as (
+  root: string,
+  files: string[],
+) => { path: string; lines: number }[]
 
 export const readAttachment = core.readAttachment as (path: string) => {
   isAttachment: boolean
