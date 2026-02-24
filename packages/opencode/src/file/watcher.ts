@@ -15,13 +15,14 @@ const POLL_MS = 100
 
 type CoreEvent = {
   path: string
-  kind: string
+  kind: "add" | "change" | "unlink"
 }
 
 type CoreWatcher = {
   watch: (path: string) => void
   unwatch: () => void
   nextEvent: () => CoreEvent | null | undefined
+  nextEvents: (limit?: number, ignorePatterns?: string[]) => CoreEvent[]
 }
 
 export namespace FileWatcher {
@@ -81,15 +82,8 @@ export namespace FileWatcher {
 
       const timer = setInterval(() => {
         for (const item of active) {
-          for (;;) {
-            const evt = item.watcher.nextEvent()
-            if (!evt) break
-            const rel = path.relative(item.dir, evt.path)
-            const file = rel.startsWith("..") ? evt.path : rel
-            if (FileIgnore.match(file, { extra: item.ignore })) continue
-            if (evt.kind === "create") Bus.publish(Event.Updated, { file: evt.path, event: "add" })
-            if (evt.kind === "write") Bus.publish(Event.Updated, { file: evt.path, event: "change" })
-            if (evt.kind === "remove") Bus.publish(Event.Updated, { file: evt.path, event: "unlink" })
+          for (const evt of item.watcher.nextEvents(128, item.ignore)) {
+            Bus.publish(Event.Updated, { file: evt.path, event: evt.kind })
           }
         }
       }, POLL_MS)

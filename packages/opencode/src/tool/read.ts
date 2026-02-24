@@ -9,7 +9,7 @@ import { Instance } from "../project/instance"
 import { assertExternalDirectory } from "./external-directory"
 import { InstructionPrompt } from "../session/instruction"
 import { Filesystem } from "../util/filesystem"
-import { readDirWindow, readFileWindow } from "@/core/native"
+import { readAttachment, readDirWindow, readFileWindow } from "@/core/native"
 
 const DEFAULT_READ_LIMIT = 2000
 const MAX_LINE_LENGTH = 2000
@@ -102,12 +102,9 @@ export const ReadTool = Tool.define("read", {
 
     const instructions = await InstructionPrompt.resolve(ctx.messages, filepath, ctx.messageID)
 
-    // Exclude SVG (XML-based) and vnd.fastbidsheet (.fbs extension, commonly FlatBuffers schema files)
-    const mime = Filesystem.mimeType(filepath)
-    const isImage = mime.startsWith("image/") && mime !== "image/svg+xml" && mime !== "image/vnd.fastbidsheet"
-    const isPdf = mime === "application/pdf"
-    if (isImage || isPdf) {
-      const msg = `${isImage ? "Image" : "PDF"} read successfully`
+    const attachment = readAttachment(filepath)
+    if (attachment.isAttachment && attachment.base64 && attachment.mimeType) {
+      const msg = `${attachment.mimeType === "application/pdf" ? "PDF" : "Image"} read successfully`
       return {
         title,
         output: msg,
@@ -119,8 +116,8 @@ export const ReadTool = Tool.define("read", {
         attachments: [
           {
             type: "file",
-            mime,
-            url: `data:${mime};base64,${Buffer.from(await Filesystem.readBytes(filepath)).toString("base64")}`,
+            mime: attachment.mimeType,
+            url: `data:${attachment.mimeType};base64,${attachment.base64}`,
           },
         ],
       }

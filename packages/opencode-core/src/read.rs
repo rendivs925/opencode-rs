@@ -1,3 +1,4 @@
+use base64::Engine;
 use napi::Result;
 use std::path::Path;
 
@@ -54,6 +55,14 @@ pub struct ReadTargetClassification {
     pub mode: String,
     pub exists: bool,
     pub mime_type: Option<String>,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct ReadAttachment {
+    pub is_attachment: bool,
+    pub mime_type: Option<String>,
+    pub base64: Option<String>,
 }
 
 #[napi]
@@ -118,6 +127,36 @@ pub fn classify_read_target(path: String, hint_path: Option<String>) -> Result<R
         mode: "text".to_string(),
         exists,
         mime_type: None,
+    })
+}
+
+#[napi]
+pub fn read_attachment(path: String) -> Result<ReadAttachment> {
+    let path_obj = Path::new(&path);
+    if !path_obj.exists() {
+        return Ok(ReadAttachment {
+            is_attachment: false,
+            mime_type: None,
+            base64: None,
+        });
+    }
+
+    let mime = mime_type(path_obj);
+    let image = mime.starts_with("image/") && mime != "image/svg+xml" && mime != "image/vnd.fastbidsheet";
+    let pdf = mime == "application/pdf";
+    if !image && !pdf {
+        return Ok(ReadAttachment {
+            is_attachment: false,
+            mime_type: None,
+            base64: None,
+        });
+    }
+
+    let bytes = std::fs::read(path_obj).map_err(|e| napi::Error::from_reason(e.to_string()))?;
+    Ok(ReadAttachment {
+        is_attachment: true,
+        mime_type: Some(mime),
+        base64: Some(base64::engine::general_purpose::STANDARD.encode(bytes)),
     })
 }
 

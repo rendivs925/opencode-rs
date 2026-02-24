@@ -39,6 +39,16 @@ pub struct SearchResult {
 
 #[napi(object)]
 #[derive(Clone)]
+pub struct SearchRenderedResult {
+    pub output: String,
+    pub has_errors: bool,
+    pub total_matches: i32,
+    pub displayed_matches: i32,
+    pub truncated: bool,
+}
+
+#[napi(object)]
+#[derive(Clone)]
 pub struct FileListResult {
     pub files: Vec<String>,
     pub has_errors: bool,
@@ -94,6 +104,79 @@ pub fn search_content(
         max_results,
         max_line_length,
     )
+}
+
+#[napi]
+pub fn search_content_rendered(
+    pattern: String,
+    search_path: String,
+    include: Option<String>,
+    max_results: Option<i32>,
+    max_line_length: Option<i32>,
+) -> Result<SearchRenderedResult> {
+    let result = search_content(
+        pattern,
+        search_path,
+        include,
+        max_results,
+        max_line_length,
+    )?;
+    let displayed = result.matches.len() as i32;
+    let truncated = result.total_matches > displayed;
+    if displayed == 0 {
+        return Ok(SearchRenderedResult {
+            output: "No files found".to_string(),
+            has_errors: result.has_errors,
+            total_matches: result.total_matches,
+            displayed_matches: 0,
+            truncated: false,
+        });
+    }
+
+    let mut lines = vec![format!(
+        "Found {} matches{}",
+        result.total_matches,
+        if truncated {
+            format!(" (showing first {displayed})")
+        } else {
+            String::new()
+        }
+    )];
+
+    let mut current = String::new();
+    for item in result.matches {
+        if current != item.path {
+            if !current.is_empty() {
+                lines.push(String::new());
+            }
+            current = item.path.clone();
+            lines.push(format!("{}:", item.path));
+        }
+        lines.push(format!("  Line {}: {}", item.line_num, item.line_text));
+    }
+
+    if truncated {
+        lines.push(String::new());
+        lines.push(format!(
+            "(Results truncated: showing {} of {} matches ({} hidden). Consider using a more specific path or pattern.)",
+            displayed,
+            result.total_matches,
+            result.total_matches - displayed
+        ));
+    }
+
+    if result.has_errors {
+        lines.push(String::new());
+        lines.push("(Some paths were inaccessible and skipped)".to_string());
+    }
+
+    Ok(SearchRenderedResult {
+        output: lines.join("\n"),
+        has_errors: result.has_errors,
+        total_matches: result.total_matches,
+        displayed_matches: displayed,
+        truncated,
+    })
 }
 
 #[napi]

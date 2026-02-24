@@ -1,4 +1,5 @@
 use crate::error::CoreError;
+use ignore::gitignore::GitignoreBuilder;
 use napi::Result;
 use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::Path;
@@ -89,6 +90,43 @@ impl FileWatcher {
             Err(_) => Ok(None),
         }
     }
+
+    #[napi]
+    pub fn next_events(
+        &mut self,
+        limit: Option<i32>,
+        ignore_patterns: Option<Vec<String>>,
+    ) -> Result<Vec<FileEvent>> {
+        if self.rx.is_none() {
+            return Err(napi::Error::from_reason("Watcher not initialized"));
+        }
+        let max = limit.unwrap_or(128).max(1) as usize;
+        let rx = self.rx.as_ref().unwrap();
+        let mut out = Vec::new();
+
+        while out.len() < max {
+            let item = if out.is_empty() {
+                rx.recv_timeout(Duration::from_millis(100))
+            } else {
+                match rx.try_recv() {
+                    Ok(evt) => Ok(evt),
+                    Err(_) => break,
+                }
+            };
+            let event = match item {
+                Ok(Ok(event)) => event,
+                Ok(Err(_)) => continue,
+                Err(_) => break,
+            };
+            out.extend(filter_events(
+                &event,
+                &self.path,
+                ignore_patterns.as_ref(),
+            ));
+        }
+
+        Ok(out)
+    }
 }
 
 impl Default for FileWatcher {
@@ -102,4 +140,55 @@ pub fn watch_path(path: String) -> Result<FileWatcher> {
     let mut watcher = FileWatcher::new();
     watcher.watch(path)?;
     Ok(watcher)
+}
+
+fn filter_events(event: &Event, root: &str, patterns: Option<&Vec<String>>) -> Vec<FileEvent> {
+    let kind = match event.kind {
+        notify::EventKind::Create(_) => "add",
+        notify::EventKind::Modify(_) => "change",
+        notify::EventKind::Remove(_) => "unlink",
+        _ => return Vec::new(),
+    };
+
+    event
+        .paths
+        .iter()
+        .filter_map(|item| {
+            let rel = item
+                .strip_prefix(Path::new(root))
+                .ok()
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_else(|| item.to_string_lossy().replace('\\', "/"));
+            if rel.is_empty() {
+                return None;
+            }
+            if should_ignore(&rel, patterns) {
+                return None;
+            }
+            Some(FileEvent {
+                path: item.to_string_lossy().to_string(),
+                kind: kind.to_string(),
+            })
+        })
+        .collect()
+}
+
+fn should_ignore(path: &str, patterns: Option<&Vec<String>>) -> bool {
+    let Some(patterns) = patterns else {
+        return false;
+    };
+    if patterns.is_empty() {
+        return false;
+    }
+
+    let mut builder = GitignoreBuilder::new("");
+    for pattern in patterns {
+        if builder.add_line(None, pattern).is_err() {
+            continue;
+        }
+    }
+    if let Ok(matcher) = builder.build() {
+        return matcher.matched(Path::new(path), false).is_ignore();
+    }
+    false
 }

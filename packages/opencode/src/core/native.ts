@@ -58,6 +58,7 @@ export const FileWatcher = core.FileWatcher as new () => {
   watch(path: string): void
   unwatch(): void
   nextEvent(): { path: string; kind: string } | null | undefined
+  nextEvents(limit?: number, ignorePatterns?: string[]): { path: string; kind: "add" | "change" | "unlink" }[]
 }
 
 export const CompiledIgnore = core.CompiledIgnore as new () => unknown
@@ -94,6 +95,20 @@ export const searchContent = core.searchContent as (
   }[]
   hasErrors: boolean
   totalMatches: number
+}
+
+export const searchContentRendered = core.searchContentRendered as (
+  pattern: string,
+  searchPath: string,
+  include?: string,
+  maxResults?: number,
+  maxLineLength?: number,
+) => {
+  output: string
+  hasErrors: boolean
+  totalMatches: number
+  displayedMatches: number
+  truncated: boolean
 }
 
 export const listFiles = core.listFiles as (
@@ -195,6 +210,12 @@ export const classifyReadTarget = core.classifyReadTarget as (
   mode: "text" | "binary" | "base64"
   exists: boolean
   mimeType?: string
+}
+
+export const readAttachment = core.readAttachment as (path: string) => {
+  isAttachment: boolean
+  mimeType?: string
+  base64?: string
 }
 
 export const readDirWindow = core.readDirWindow as (

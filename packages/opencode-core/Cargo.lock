@@ -962,6 +962,7 @@ name = "opencode-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "bincode",
  "bzip2 0.4.4",
  "criterion",

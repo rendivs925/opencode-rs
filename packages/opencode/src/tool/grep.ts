@@ -1,6 +1,6 @@
 import z from "zod"
 import { Tool } from "./tool"
-import { searchContent } from "@/core/native"
+import { searchContentRendered } from "@/core/native"
 
 import DESCRIPTION from "./grep.txt"
 import { Instance } from "../project/instance"
@@ -37,11 +37,8 @@ export const GrepTool = Tool.define("grep", {
     await assertExternalDirectory(ctx, searchPath, { kind: "directory" })
 
     const limit = 100
-    const result = searchContent(params.pattern, searchPath, params.include, limit, MAX_LINE_LENGTH)
-    const truncated = result.totalMatches > limit
-    const finalMatches = result.matches
-
-    if (finalMatches.length === 0) {
+    const result = searchContentRendered(params.pattern, searchPath, params.include, limit, MAX_LINE_LENGTH)
+    if (result.displayedMatches === 0) {
       return {
         title: params.pattern,
         metadata: { matches: 0, truncated: false },
@@ -49,40 +46,13 @@ export const GrepTool = Tool.define("grep", {
       }
     }
 
-    const totalMatches = result.totalMatches
-    const outputLines = [`Found ${totalMatches} matches${truncated ? ` (showing first ${limit})` : ""}`]
-
-    let currentFile = ""
-    for (const match of finalMatches) {
-      if (currentFile !== match.path) {
-        if (currentFile !== "") {
-          outputLines.push("")
-        }
-        currentFile = match.path
-        outputLines.push(`${match.path}:`)
-      }
-      outputLines.push(`  Line ${match.lineNum}: ${match.lineText}`)
-    }
-
-    if (truncated) {
-      outputLines.push("")
-      outputLines.push(
-        `(Results truncated: showing ${limit} of ${totalMatches} matches (${totalMatches - limit} hidden). Consider using a more specific path or pattern.)`,
-      )
-    }
-
-    if (result.hasErrors) {
-      outputLines.push("")
-      outputLines.push("(Some paths were inaccessible and skipped)")
-    }
-
     return {
       title: params.pattern,
       metadata: {
-        matches: totalMatches,
-        truncated,
+        matches: result.totalMatches,
+        truncated: result.truncated,
       },
-      output: outputLines.join("\n"),
+      output: result.output,
     }
   },
 })
