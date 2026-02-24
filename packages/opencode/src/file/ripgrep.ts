@@ -11,6 +11,12 @@ import { Filesystem } from "../util/filesystem"
 import { ZipReader, BlobReader, BlobWriter } from "@zip.js/zip.js"
 import { Log } from "@/util/log"
 
+type Core = {
+  extractTarGz?: (archivePath: string, outputDir: string) => unknown
+  listArchiveContents?: (archivePath: string) => { name: string }[]
+  readArchiveEntry?: (archivePath: string, entryName: string) => Uint8Array
+}
+
 export namespace Ripgrep {
   const log = Log.create({ service: "ripgrep" })
   const Stats = z.object({
@@ -124,6 +130,7 @@ export namespace Ripgrep {
   )
 
   const state = lazy(async () => {
+    const core = (await import("@opencode-ai/core").catch(() => undefined)) as Core | undefined
     const system = Bun.which("rg")
     if (system) {
       const stat = await fs.stat(system).catch(() => undefined)
@@ -148,6 +155,18 @@ export namespace Ripgrep {
       const archivePath = path.join(Global.Path.bin, filename)
       await Filesystem.write(archivePath, Buffer.from(arrayBuffer))
       if (config.extension === "tar.gz") {
+        const native = core?.extractTarGz
+        if (native) {
+          const ok = await Promise.resolve()
+            .then(() => native(archivePath, Global.Path.bin))
+            .then(() => true)
+            .catch(() => false)
+          if (ok && (await Filesystem.exists(filepath))) {
+            await fs.unlink(archivePath)
+            if (!platformKey.endsWith("-win32")) await fs.chmod(filepath, 0o755)
+            return { filepath }
+          }
+        }
         const args = ["tar", "-xzf", archivePath, "--strip-components=1"]
 
         if (platformKey.endsWith("-darwin")) args.push("--include=*/rg")
@@ -166,6 +185,24 @@ export namespace Ripgrep {
           })
       }
       if (config.extension === "zip") {
+        const list = core?.listArchiveContents
+        const read = core?.readArchiveEntry
+        if (list && read) {
+          const ok = await Promise.resolve()
+            .then(async () => {
+              const entry = list(archivePath).find((item) => item.name.endsWith("rg.exe"))
+              if (!entry) return false
+              const bytes = read(archivePath, entry.name)
+              await Filesystem.write(filepath, Buffer.from(bytes))
+              return true
+            })
+            .catch(() => false)
+          if (ok) {
+            await fs.unlink(archivePath)
+            return { filepath }
+          }
+        }
+
         const zipFileReader = new ZipReader(new BlobReader(new Blob([arrayBuffer])))
         const entries = await zipFileReader.getEntries()
         let rgEntry: any
