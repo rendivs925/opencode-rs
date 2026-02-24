@@ -99,6 +99,34 @@ pub struct ReadDiffSnapshot {
     pub original: String,
 }
 
+#[napi(object)]
+#[derive(Clone)]
+pub struct DiffHunk {
+    pub old_start: i32,
+    pub old_lines: i32,
+    pub new_start: i32,
+    pub new_lines: i32,
+    pub lines: Vec<String>,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct DiffPatch {
+    pub old_file_name: String,
+    pub new_file_name: String,
+    pub old_header: Option<String>,
+    pub new_header: Option<String>,
+    pub hunks: Vec<DiffHunk>,
+    pub index: Option<String>,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct DiffPatchResult {
+    pub diff: String,
+    pub patch: DiffPatch,
+}
+
 #[napi]
 pub fn classify_read_target(path: String, hint_path: Option<String>) -> Result<ReadTargetClassification> {
     let path_obj = Path::new(&path);
@@ -339,6 +367,63 @@ pub fn read_diff_snapshot(root: String, file: String) -> Result<ReadDiffSnapshot
         has_diff: true,
         original,
     })
+}
+
+#[napi]
+pub fn build_diff_patch(file: String, original: String, content: String) -> Result<DiffPatchResult> {
+    let old = split_lines_preserve_empty(&original);
+    let new = split_lines_preserve_empty(&content);
+
+    let mut lines = Vec::new();
+    for item in old.iter() {
+        lines.push(format!("-{item}"));
+    }
+    for item in new.iter() {
+        lines.push(format!("+{item}"));
+    }
+
+    let hunk = DiffHunk {
+        old_start: 1,
+        old_lines: old.len() as i32,
+        new_start: 1,
+        new_lines: new.len() as i32,
+        lines: lines.clone(),
+    };
+    let patch = DiffPatch {
+        old_file_name: file.clone(),
+        new_file_name: file.clone(),
+        old_header: Some("old".to_string()),
+        new_header: Some("new".to_string()),
+        hunks: vec![hunk],
+        index: None,
+    };
+
+    let mut out = String::new();
+    out.push_str(&format!("--- {file}\n"));
+    out.push_str(&format!("+++ {file}\n"));
+    out.push_str(&format!("@@ -1,{} +1,{} @@\n", old.len(), new.len()));
+    for line in lines {
+        out.push_str(&line);
+        out.push('\n');
+    }
+
+    Ok(DiffPatchResult { diff: out, patch })
+}
+
+#[napi]
+pub fn resolve_git_dir(root: String) -> Result<Option<String>> {
+    let mut cmd = Command::new("git");
+    cmd.args(["rev-parse", "--git-dir"]).current_dir(&root);
+    let output = cmd.output().map_err(|e| napi::Error::from_reason(e.to_string()))?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    let path = Path::new(&root).join(text);
+    Ok(Some(path.to_string_lossy().to_string()))
 }
 
 #[napi]
@@ -591,4 +676,16 @@ fn run_git_text(root: &str, args: &[&str]) -> Result<String> {
         return Ok(String::new());
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn split_lines_preserve_empty(value: &str) -> Vec<String> {
+    if value.is_empty() {
+        return Vec::new();
+    }
+    let normalized = value.replace("\r\n", "\n");
+    normalized
+        .trim_end_matches('\n')
+        .split('\n')
+        .map(|line| line.to_string())
+        .collect()
 }

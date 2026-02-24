@@ -1,13 +1,12 @@
 import { BusEvent } from "@/bus/bus-event"
 import { Bus } from "@/bus"
-import { FileWatcher as CoreFileWatcher } from "@/core/native"
+import { FileWatcher as CoreFileWatcher, resolveGitDir } from "@/core/native"
 import z from "zod"
 import { Instance } from "../project/instance"
 import { Log } from "../util/log"
 import { FileIgnore } from "./ignore"
 import { Config } from "../config/config"
 import path from "path"
-import { $ } from "bun"
 import { Flag } from "@/flag/flag"
 import { readdir } from "fs/promises"
 
@@ -48,13 +47,7 @@ export namespace FileWatcher {
 
       const watched = [{ dir: Instance.directory, ignore: [...FileIgnore.PATTERNS, ...cfgIgnores] }]
       if (Instance.project.vcs === "git") {
-        const vcsDir = await $`git rev-parse --git-dir`
-          .quiet()
-          .nothrow()
-          .cwd(Instance.worktree)
-          .text()
-          .then((x) => path.resolve(Instance.worktree, x.trim()))
-          .catch(() => undefined)
+        const vcsDir = resolveGitDir(Instance.worktree) || undefined
         if (vcsDir && !cfgIgnores.includes(".git") && !cfgIgnores.includes(vcsDir)) {
           const gitDirContents = await readdir(vcsDir).catch(() => [])
           watched.push({

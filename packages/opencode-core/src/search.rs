@@ -92,6 +92,13 @@ pub struct SearchIndexedInput {
     pub dirs: Vec<String>,
 }
 
+#[napi(object)]
+#[derive(Clone)]
+pub struct GlobalHomeIndex {
+    pub files: Vec<String>,
+    pub dirs: Vec<String>,
+}
+
 #[napi]
 pub fn search_content(
     pattern: String,
@@ -111,6 +118,71 @@ pub fn search_content(
         max_results,
         max_line_length,
     )
+}
+
+#[napi]
+pub fn index_global_home_dirs(search_path: String, platform: Option<String>) -> Result<GlobalHomeIndex> {
+    let root = Path::new(&search_path);
+    let mut dirs = BTreeSet::new();
+    let mut ignore = HashSet::new();
+    let os = platform.unwrap_or_default();
+    if os == "darwin" {
+        ignore.insert("Library".to_string());
+    }
+    if os == "win32" {
+        ignore.insert("AppData".to_string());
+    }
+    let ignore_nested = HashSet::from([
+        "node_modules".to_string(),
+        "dist".to_string(),
+        "build".to_string(),
+        "target".to_string(),
+        "vendor".to_string(),
+    ]);
+
+    let top = std::fs::read_dir(root)
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.flatten())
+        .collect::<Vec<_>>();
+    for entry in top {
+        let Ok(ft) = entry.file_type() else {
+            continue;
+        };
+        if !ft.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') || ignore.contains(&name) {
+            continue;
+        }
+        dirs.insert(format!("{name}/"));
+
+        let base = entry.path();
+        let children = std::fs::read_dir(&base)
+            .ok()
+            .into_iter()
+            .flat_map(|items| items.flatten())
+            .collect::<Vec<_>>();
+        for child in children {
+            let Ok(child_ft) = child.file_type() else {
+                continue;
+            };
+            if !child_ft.is_dir() {
+                continue;
+            }
+            let child_name = child.file_name().to_string_lossy().to_string();
+            if child_name.starts_with('.') || ignore_nested.contains(&child_name) {
+                continue;
+            }
+            dirs.insert(format!("{name}/{child_name}/"));
+        }
+    }
+
+    Ok(GlobalHomeIndex {
+        files: Vec::new(),
+        dirs: dirs.into_iter().collect(),
+    })
 }
 
 #[napi]

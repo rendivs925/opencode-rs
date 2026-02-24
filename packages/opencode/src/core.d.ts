@@ -112,6 +112,29 @@ declare module "@opencode-ai/core" {
     kind: "file" | "directory" | "all",
     limit?: number,
   ): string[]
+  export function indexGlobalHomeDirs(searchPath: string, platform?: string): { files: string[]; dirs: string[] }
+  export function buildDiffPatch(
+    file: string,
+    original: string,
+    content: string,
+  ): {
+    diff: string
+    patch: {
+      oldFileName: string
+      newFileName: string
+      oldHeader?: string
+      newHeader?: string
+      hunks: Array<{
+        oldStart: number
+        oldLines: number
+        newStart: number
+        newLines: number
+        lines: string[]
+      }>
+      index?: string
+    }
+  }
+  export function resolveGitDir(root: string): string | undefined | null
 
   export type NativeFileEvent = {
     path: string

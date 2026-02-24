@@ -1,10 +1,13 @@
 import { describe, expect, test } from "bun:test"
 import { $ } from "bun"
+import fs from "fs/promises"
 import path from "path"
 import { tmpdir } from "../fixture/fixture"
 import {
+  buildDiffPatch,
   gitStatus,
   globScan,
+  indexGlobalHomeDirs,
   listDirectoryProject,
   listTree,
   readDiffSnapshot,
@@ -89,5 +92,22 @@ describe("core/native integration contracts", () => {
     const snapshot = readDiffSnapshot(tmp.path, "tracked.txt")
     expect(snapshot.hasDiff).toBe(true)
     expect(snapshot.original).toContain("a")
+
+    const built = buildDiffPatch("tracked.txt", snapshot.original, "b\n")
+    expect(built.diff).toContain("--- tracked.txt")
+    expect(built.patch.hunks.length).toBe(1)
+  })
+
+  test("global home dir index returns shallow dirs", async () => {
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await fs.mkdir(path.join(dir, "src", "nested"), { recursive: true })
+        await Bun.write(path.join(dir, "src", ".keep"), "")
+        await Bun.write(path.join(dir, "src", "nested", "x.txt"), "x")
+      },
+    })
+    const indexed = indexGlobalHomeDirs(tmp.path, process.platform)
+    expect(indexed.dirs.some((item) => item === "src/")).toBe(true)
+    expect(indexed.dirs.some((item) => item === "src/nested/")).toBe(true)
   })
 })

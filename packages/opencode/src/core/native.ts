@@ -206,6 +206,11 @@ export const searchPaths = core.searchPaths as (
   maxDepth?: number,
 ) => string[]
 
+export const indexGlobalHomeDirs = core.indexGlobalHomeDirs as (
+  searchPath: string,
+  platform?: string,
+) => { files: string[]; dirs: string[] }
+
 export const searchIndexedPaths = core.searchIndexedPaths as (
   indexed: { files: string[]; dirs: string[] },
   query: string,
@@ -282,6 +287,30 @@ export const readDiffSnapshot = core.readDiffSnapshot as (
   root: string,
   file: string,
 ) => { hasDiff: boolean; original: string }
+
+export const buildDiffPatch = core.buildDiffPatch as (
+  file: string,
+  original: string,
+  content: string,
+) => {
+  diff: string
+  patch: {
+    oldFileName: string
+    newFileName: string
+    oldHeader?: string
+    newHeader?: string
+    hunks: {
+      oldStart: number
+      oldLines: number
+      newStart: number
+      newLines: number
+      lines: string[]
+    }[]
+    index?: string
+  }
+}
+
+export const resolveGitDir = core.resolveGitDir as (root: string) => string | undefined | null
 
 export const readAttachment = core.readAttachment as (path: string) => {
   isAttachment: boolean
