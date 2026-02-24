@@ -53,3 +53,32 @@ jobs:
           name: opencode-core-${{ matrix.settings.name }}
           path: packages/opencode-core/prebuilds
           if-no-files-found: error
+
+  verify:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all prebuild artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: prebuilds
+          pattern: opencode-core-*
+          merge-multiple: true
+
+      - name: Verify required platform binaries exist
+        run: |
+          set -euo pipefail
+          required=(
+            "linux-x64/opencode-core.node"
+            "linux-arm64/opencode-core.node"
+            "darwin-x64/opencode-core.node"
+            "darwin-arm64/opencode-core.node"
+            "win32-x64/opencode-core.node"
+          )
+          for item in "${required[@]}"; do
+            if [ ! -f "prebuilds/$item" ]; then
+              echo "Missing prebuild: $item"
+              exit 1
+            fi
+          done
+          echo "All required prebuilds found."
