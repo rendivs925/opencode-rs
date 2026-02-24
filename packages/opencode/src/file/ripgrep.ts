@@ -181,7 +181,7 @@ export namespace Ripgrep {
     glob?: string[]
     limit?: number
     follow?: boolean
-  }) {
+  }): Promise<z.infer<typeof Match>["data"][]> {
     const globs = ["!.git/*", ...(input.glob ?? [])]
     const result = searchContentAdvanced(
       input.pattern,
@@ -214,7 +214,7 @@ export namespace Ripgrep {
         },
       }
 
-      return Result.parse(parsed).data
+      return Match.parse(parsed).data
     })
   }
 }
