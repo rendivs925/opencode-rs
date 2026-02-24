@@ -36,8 +36,14 @@ pub fn count_tokens_from_text(text: String, encoding: String) -> Result<i32> {
 }
 
 fn count_tokens_from_text_internal(text: &str, encoding: &str) -> Result<i32> {
-    let bpe = tiktoken_rs::get_bpe_from_model(encoding)
-        .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+    let bpe = match encoding {
+        "cl100k_base" => tiktoken_rs::cl100k_base(),
+        "p50k_base" => tiktoken_rs::p50k_base(),
+        "p50k_edit" => tiktoken_rs::p50k_edit(),
+        "r50k_base" => tiktoken_rs::r50k_base(),
+        _ => tiktoken_rs::get_bpe_from_model(encoding),
+    }
+    .map_err(|e| napi::Error::from_reason(e.to_string()))?;
     let tokens = bpe.encode_ordinary(text);
     Ok(tokens.len() as i32)
 }
@@ -48,8 +54,14 @@ pub fn count_tokens_streaming(path: String, encoding: String, chunk_size: i32) -
     let file = File::open(path).map_err(|e| napi::Error::from_reason(e.to_string()))?;
     let mmap = unsafe { Mmap::map(&file).map_err(|e| napi::Error::from_reason(e.to_string()))? };
 
-    let bpe = tiktoken_rs::get_bpe_from_model(&encoding)
-        .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+    let bpe = match encoding.as_str() {
+        "cl100k_base" => tiktoken_rs::cl100k_base(),
+        "p50k_base" => tiktoken_rs::p50k_base(),
+        "p50k_edit" => tiktoken_rs::p50k_edit(),
+        "r50k_base" => tiktoken_rs::r50k_base(),
+        _ => tiktoken_rs::get_bpe_from_model(&encoding),
+    }
+    .map_err(|e| napi::Error::from_reason(e.to_string()))?;
     let mut total_tokens = 0;
 
     for chunk in mmap.chunks(chunk_size as usize) {

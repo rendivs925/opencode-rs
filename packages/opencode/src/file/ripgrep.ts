@@ -1,4 +1,5 @@
 // Ripgrep utility functions
+import { listArchiveContents, readArchiveEntry } from "@/core/native"
 import path from "path"
 import { Global } from "../global"
 import fs from "fs/promises"
@@ -7,15 +8,7 @@ import { NamedError } from "@opencode-ai/util/error"
 import { lazy } from "../util/lazy"
 import { $ } from "bun"
 import { Filesystem } from "../util/filesystem"
-
-import { ZipReader, BlobReader, BlobWriter } from "@zip.js/zip.js"
 import { Log } from "@/util/log"
-
-type Core = {
-  extractTarGz?: (archivePath: string, outputDir: string) => unknown
-  listArchiveContents?: (archivePath: string) => { name: string }[]
-  readArchiveEntry?: (archivePath: string, entryName: string) => Uint8Array
-}
 
 export namespace Ripgrep {
   const log = Log.create({ service: "ripgrep" })
@@ -130,7 +123,6 @@ export namespace Ripgrep {
   )
 
   const state = lazy(async () => {
-    const core = (await import("@opencode-ai/core").catch(() => undefined)) as Core | undefined
     const system = Bun.which("rg")
     if (system) {
       const stat = await fs.stat(system).catch(() => undefined)
@@ -154,82 +146,16 @@ export namespace Ripgrep {
       const arrayBuffer = await response.arrayBuffer()
       const archivePath = path.join(Global.Path.bin, filename)
       await Filesystem.write(archivePath, Buffer.from(arrayBuffer))
-      if (config.extension === "tar.gz") {
-        const native = core?.extractTarGz
-        if (native) {
-          const ok = await Promise.resolve()
-            .then(() => native(archivePath, Global.Path.bin))
-            .then(() => true)
-            .catch(() => false)
-          if (ok && (await Filesystem.exists(filepath))) {
-            await fs.unlink(archivePath)
-            if (!platformKey.endsWith("-win32")) await fs.chmod(filepath, 0o755)
-            return { filepath }
-          }
-        }
-        const args = ["tar", "-xzf", archivePath, "--strip-components=1"]
-
-        if (platformKey.endsWith("-darwin")) args.push("--include=*/rg")
-        if (platformKey.endsWith("-linux")) args.push("--wildcards", "*/rg")
-
-        const proc = Bun.spawn(args, {
-          cwd: Global.Path.bin,
-          stderr: "pipe",
-          stdout: "pipe",
+      const expected = config.extension === "zip" ? "rg.exe" : "rg"
+      const entry = listArchiveContents(archivePath).find((item: { name: string }) => item.name.endsWith(expected))
+      if (!entry) {
+        throw new ExtractionFailedError({
+          filepath: archivePath,
+          stderr: `${expected} not found in archive`,
         })
-        await proc.exited
-        if (proc.exitCode !== 0)
-          throw new ExtractionFailedError({
-            filepath,
-            stderr: await Bun.readableStreamToText(proc.stderr),
-          })
       }
-      if (config.extension === "zip") {
-        const list = core?.listArchiveContents
-        const read = core?.readArchiveEntry
-        if (list && read) {
-          const ok = await Promise.resolve()
-            .then(async () => {
-              const entry = list(archivePath).find((item) => item.name.endsWith("rg.exe"))
-              if (!entry) return false
-              const bytes = read(archivePath, entry.name)
-              await Filesystem.write(filepath, Buffer.from(bytes))
-              return true
-            })
-            .catch(() => false)
-          if (ok) {
-            await fs.unlink(archivePath)
-            return { filepath }
-          }
-        }
-
-        const zipFileReader = new ZipReader(new BlobReader(new Blob([arrayBuffer])))
-        const entries = await zipFileReader.getEntries()
-        let rgEntry: any
-        for (const entry of entries) {
-          if (entry.filename.endsWith("rg.exe")) {
-            rgEntry = entry
-            break
-          }
-        }
-
-        if (!rgEntry) {
-          throw new ExtractionFailedError({
-            filepath: archivePath,
-            stderr: "rg.exe not found in zip archive",
-          })
-        }
-
-        const rgBlob = await rgEntry.getData(new BlobWriter())
-        if (!rgBlob) {
-          throw new ExtractionFailedError({
-            filepath: archivePath,
-            stderr: "Failed to extract rg.exe from zip archive",
-          })
-        }
-        await Filesystem.write(filepath, Buffer.from(await rgBlob.arrayBuffer()))
-        await zipFileReader.close()
-      }
+      const bytes = readArchiveEntry(archivePath, entry.name)
+      await Filesystem.write(filepath, Buffer.from(bytes))
       await fs.unlink(archivePath)
       if (!platformKey.endsWith("-win32")) await fs.chmod(filepath, 0o755)
     }

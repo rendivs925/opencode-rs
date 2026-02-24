@@ -1,6 +1,18 @@
 declare module "@opencode-ai/core" {
-  export function glob(pattern: string, cwd: string, maxDepth?: number, includeHidden?: boolean): string[]
-  export function globParallel(pattern: string, cwd: string, maxDepth?: number, includeHidden?: boolean): string[]
+  export function glob(
+    pattern: string,
+    cwd: string,
+    maxDepth?: number,
+    includeHidden?: boolean,
+    followLinks?: boolean,
+  ): string[]
+  export function globParallel(
+    pattern: string,
+    cwd: string,
+    maxDepth?: number,
+    includeHidden?: boolean,
+    followLinks?: boolean,
+  ): string[]
 
   export function countTokens(path: string, encoding: string): number
   export function countTokensFromText(text: string, encoding: string): number

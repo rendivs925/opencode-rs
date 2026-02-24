@@ -1,4 +1,4 @@
-use ignore::gitignore::Gitignore;
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use napi::Result;
 use rayon::prelude::*;
 use std::path::Path;
@@ -6,29 +6,20 @@ use std::path::Path;
 #[napi]
 pub fn is_ignored(path: String, patterns: Vec<String>) -> Result<bool> {
     let path = Path::new(&path);
-
-    for pattern in patterns {
-        let (matcher, _) = Gitignore::new(&pattern);
-        if matcher.matched(path, path.is_dir()).is_ignore() {
-            return Ok(true);
-        }
-    }
-
-    Ok(false)
+    let matcher = build_matcher(&patterns)?;
+    Ok(matcher.matched(path, path.is_dir()).is_ignore())
 }
 
 #[napi]
 pub fn filter_paths(paths: Vec<String>, patterns: Vec<String>) -> Result<Vec<String>> {
-    let compiled: Vec<_> = patterns.iter().map(|p| Gitignore::new(p)).collect();
+    let matcher = build_matcher(&patterns)?;
 
     let filtered: Vec<String> = paths
         .par_iter()
         .filter(|path| {
             let p = Path::new(path);
             let is_dir = p.is_dir();
-            !compiled
-                .iter()
-                .any(|(m, _)| m.matched(p, is_dir).is_ignore())
+            !matcher.matched(p, is_dir).is_ignore()
         })
         .cloned()
         .collect();
@@ -51,13 +42,14 @@ impl CompiledIgnore {
     #[napi]
     pub fn is_ignored(&self, path: String) -> bool {
         let path = Path::new(&path);
-        for pattern in &self.patterns {
-            let (matcher, _) = Gitignore::new(pattern);
-            if matcher.matched(path, path.is_dir()).is_ignore() {
-                return true;
-            }
+        let matcher = build_matcher(&self.patterns);
+        if matcher.is_err() {
+            return false;
         }
-        false
+        matcher
+            .ok()
+            .map(|m| m.matched(path, path.is_dir()).is_ignore())
+            .unwrap_or(false)
     }
 
     #[napi]
@@ -67,4 +59,17 @@ impl CompiledIgnore {
             .filter(|p| !self.is_ignored(p.clone()))
             .collect()
     }
+}
+
+fn build_matcher(patterns: &[String]) -> Result<Gitignore> {
+    let mut builder = GitignoreBuilder::new("");
+    for pattern in patterns {
+        builder
+            .add_line(None, pattern)
+            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+    }
+    let matcher = builder
+        .build()
+        .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+    Ok(matcher)
 }

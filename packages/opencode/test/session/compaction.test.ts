@@ -228,9 +228,9 @@ describe("session.compaction.isOverflow", () => {
 })
 
 describe("util.token.estimate", () => {
-  test("estimates tokens from text (4 chars per token)", () => {
+  test("estimates tokens from text with rust tokenizer", () => {
     const text = "x".repeat(4000)
-    expect(Token.estimate(text)).toBe(1000)
+    expect(Token.estimate(text)).toBe(500)
   })
 
   test("estimates tokens from larger text", () => {

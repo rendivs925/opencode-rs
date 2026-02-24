@@ -1,5 +1,6 @@
 import fs from "fs/promises"
 import path from "path"
+import { truncate } from "@/core/native"
 import { Global } from "../global"
 import { Identifier } from "../id/id"
 import { PermissionNext } from "../permission/next"
@@ -7,24 +8,6 @@ import type { Agent } from "../agent/agent"
 import { Scheduler } from "../scheduler"
 import { Filesystem } from "../util/filesystem"
 import { Glob } from "../util/glob"
-
-type CoreResult = {
-  text: string
-  lines: number
-  bytes: number
-  truncated: boolean
-}
-
-type Core = {
-  truncate?: (
-    text: string,
-    maxLines?: number,
-    maxBytes?: number,
-    direction?: "head" | "tail",
-  ) => CoreResult
-}
-
-const core = (await import("@opencode-ai/core").catch(() => undefined)) as Core | undefined
 
 export namespace Truncate {
   export const MAX_LINES = 2000
@@ -77,45 +60,11 @@ export namespace Truncate {
       return { content: text, truncated: false }
     }
 
-    const native = core?.truncate
-    const rust = native
-      ? await Promise.resolve()
-          .then(() => native(text, maxLines, maxBytes, direction))
-          .catch(() => undefined)
-      : undefined
-
-    const out: string[] = []
-    let i = 0
-    let bytes = 0
-    let hitBytes = false
-    if (!rust) {
-      if (direction === "head") {
-        for (i = 0; i < lines.length && i < maxLines; i++) {
-          const size = Buffer.byteLength(lines[i], "utf-8") + (i > 0 ? 1 : 0)
-          if (bytes + size > maxBytes) {
-            hitBytes = true
-            break
-          }
-          out.push(lines[i])
-          bytes += size
-        }
-      } else {
-        for (i = lines.length - 1; i >= 0 && out.length < maxLines; i--) {
-          const size = Buffer.byteLength(lines[i], "utf-8") + (out.length > 0 ? 1 : 0)
-          if (bytes + size > maxBytes) {
-            hitBytes = true
-            break
-          }
-          out.unshift(lines[i])
-          bytes += size
-        }
-      }
-    }
-
-    const preview = rust ? rust.text : out.join("\n")
-    const resultBytes = rust ? rust.bytes : bytes
-    const resultLines = rust ? rust.lines : out.length
-    const byteLimited = rust ? totalBytes > maxBytes && resultBytes <= maxBytes : hitBytes
+    const result = truncate(text, maxLines, maxBytes, direction)
+    const preview = result.text
+    const resultBytes = result.bytes
+    const resultLines = result.lines
+    const byteLimited = totalBytes > maxBytes && resultBytes <= maxBytes
     const removed = byteLimited ? totalBytes - resultBytes : lines.length - resultLines
     const unit = byteLimited ? "bytes" : "lines"
 

@@ -1,3 +1,4 @@
+use globset::GlobBuilder;
 use ignore::WalkBuilder;
 use napi::Result;
 use rayon::prelude::*;
@@ -9,6 +10,7 @@ pub fn glob(
     cwd: String,
     max_depth: Option<u32>,
     include_hidden: bool,
+    follow_links: Option<bool>,
 ) -> Result<Vec<String>> {
     let cwd_path = Path::new(&cwd);
     let mut walker = WalkBuilder::new(cwd_path);
@@ -16,6 +18,7 @@ pub fn glob(
     walker
         .hidden(!include_hidden)
         .max_depth(max_depth.map(|d| d as usize))
+        .follow_links(follow_links.unwrap_or(false))
         .require_git(false)
         .filter_entry(move |entry| {
             let path = entry.path();
@@ -26,84 +29,30 @@ pub fn glob(
                 || include_hidden
         });
 
-    let pattern_path = Path::new(&pattern);
-    let is_glob_pattern = pattern.contains('*') || pattern.contains('?');
+    let matcher = GlobBuilder::new(&pattern)
+        .literal_separator(true)
+        .build()
+        .map_err(|e| napi::Error::from_reason(e.to_string()))?
+        .compile_matcher();
 
-    let results: Vec<String> = if is_glob_pattern {
-        walker
-            .build()
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|e| matches_glob_pattern(pattern_path, e.path()))
-            .map(|e| e.path().to_string_lossy().to_string())
-            .collect()
-    } else {
-        walker
-            .build()
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().to_string_lossy().contains(&pattern))
-            .map(|e| e.path().to_string_lossy().to_string())
-            .collect()
-    };
+    let results: Vec<String> = walker
+        .build()
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let path = e.path();
+            if path == cwd_path {
+                return None;
+            }
+            let rel = path.strip_prefix(cwd_path).ok().unwrap_or(path);
+            if matcher.is_match(rel) {
+                return Some(path.to_string_lossy().to_string());
+            }
+            None
+        })
+        .collect();
 
     Ok(results)
-}
-
-fn matches_glob_pattern(pattern: &Path, path: &Path) -> bool {
-    let pattern_str = pattern.to_string_lossy();
-    let path_str = path.to_string_lossy();
-
-    if pattern_str.contains("**") {
-        let base = pattern_str.split("**").next().unwrap_or("");
-        path_str.contains(&base.replace('/', ""))
-    } else {
-        let file_name = path
-            .file_name()
-            .map(|s| s.to_string_lossy())
-            .unwrap_or_default();
-        glob_match(
-            &pattern_str.replace("/*", "").replace("/*/", ""),
-            &file_name,
-        )
-    }
-}
-
-fn glob_match(pattern: &str, text: &str) -> bool {
-    let mut pattern_chars = pattern.chars().peekable();
-    let mut text_chars = text.chars().peekable();
-
-    while pattern_chars.peek().is_some() || text_chars.peek().is_some() {
-        match (pattern_chars.peek(), text_chars.peek()) {
-            (Some('*'), _) => {
-                pattern_chars.next();
-                if pattern_chars.peek().is_none() {
-                    return true;
-                }
-                while text_chars.peek().is_some() {
-                    if glob_match(
-                        &pattern_chars.clone().collect::<String>(),
-                        &text_chars.clone().collect::<String>(),
-                    ) {
-                        return true;
-                    }
-                    text_chars.next();
-                }
-                return false;
-            }
-            (Some('?'), Some(_)) => {
-                pattern_chars.next();
-                text_chars.next();
-            }
-            (Some(p), Some(t)) if p == t => {
-                pattern_chars.next();
-                text_chars.next();
-            }
-            (None, None) => return true,
-            _ => return false,
-        }
-    }
-    true
 }
 
 #[napi]
@@ -112,22 +61,38 @@ pub fn glob_parallel(
     cwd: String,
     max_depth: Option<u32>,
     include_hidden: bool,
+    follow_links: Option<bool>,
 ) -> Result<Vec<String>> {
     let cwd_path = Path::new(&cwd);
     let entries: Vec<_> = WalkBuilder::new(cwd_path)
         .hidden(!include_hidden)
         .max_depth(max_depth.map(|d| d as usize))
+        .follow_links(follow_links.unwrap_or(false))
         .require_git(false)
         .build()
         .into_iter()
         .filter_map(|e| e.ok())
         .collect();
 
-    let pattern_path = Path::new(&pattern);
+    let matcher = GlobBuilder::new(&pattern)
+        .literal_separator(true)
+        .build()
+        .map_err(|e| napi::Error::from_reason(e.to_string()))?
+        .compile_matcher();
+
     let filtered: Vec<String> = entries
         .par_iter()
-        .filter(|e| matches_glob_pattern(pattern_path, e.path()))
-        .map(|e| e.path().to_string_lossy().to_string())
+        .filter_map(|e| {
+            let path = e.path();
+            if path == cwd_path {
+                return None;
+            }
+            let rel = path.strip_prefix(cwd_path).ok().unwrap_or(path);
+            if matcher.is_match(rel) {
+                return Some(path.to_string_lossy().to_string());
+            }
+            None
+        })
         .collect();
 
     Ok(filtered)
