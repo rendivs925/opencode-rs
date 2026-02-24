@@ -1,5 +1,4 @@
-import { glob, globParallel } from "@/core/native"
-import { minimatch } from "minimatch"
+import { glob, globParallel, isIgnored } from "@/core/native"
 import fs from "fs"
 import path from "path"
 
@@ -37,6 +36,6 @@ export namespace Glob {
   }
 
   export function match(pattern: string, filepath: string): boolean {
-    return minimatch(filepath, pattern, { dot: true })
+    return isIgnored(filepath, [pattern])
   }
 }
