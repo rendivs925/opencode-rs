@@ -2,6 +2,8 @@
 
 High-performance core utilities for OpenCode written in Rust using NAPI-RS.
 
+See `RUST_REWRITE_GUIDE.md` in repository root for end-to-end rewrite and run instructions.
+
 ## Features
 
 - **Glob** - Fast file discovery using walkdir + rayon
