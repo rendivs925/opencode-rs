@@ -84,7 +84,14 @@ export const searchContent = core.searchContent as (
   maxResults?: number,
   maxLineLength?: number,
 ) => {
-  matches: { path: string; modTime: number; lineNum: number; lineText: string }[]
+  matches: {
+    path: string
+    modTime: number
+    lineNum: number
+    lineText: string
+    absoluteOffset: number
+    submatches: { text: string; start: number; end: number }[]
+  }[]
   hasErrors: boolean
   totalMatches: number
 }
@@ -141,7 +148,14 @@ export const searchContentAdvanced = core.searchContentAdvanced as (
   maxResults?: number,
   maxLineLength?: number,
 ) => {
-  matches: { path: string; modTime: number; lineNum: number; lineText: string }[]
+  matches: {
+    path: string
+    modTime: number
+    lineNum: number
+    lineText: string
+    absoluteOffset: number
+    submatches: { text: string; start: number; end: number }[]
+  }[]
   hasErrors: boolean
   totalMatches: number
 }

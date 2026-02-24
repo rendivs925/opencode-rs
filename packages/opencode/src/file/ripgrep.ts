@@ -144,23 +144,19 @@ export namespace Ripgrep {
       undefined,
     )
 
-    const regex = new RegExp(input.pattern, "g")
-
     return result.matches.map((item) => {
-      const submatches = Array.from(item.lineText.matchAll(regex)).map((m) => ({
-        match: { text: m[0] ?? "" },
-        start: m.index ?? 0,
-        end: (m.index ?? 0) + (m[0]?.length ?? 0),
-      }))
-
       const parsed = {
         type: "match",
         data: {
           path: { text: path.join(input.cwd, item.path) },
           lines: { text: item.lineText },
           line_number: item.lineNum,
-          absolute_offset: 0,
-          submatches,
+          absolute_offset: item.absoluteOffset,
+          submatches: item.submatches.map((m) => ({
+            match: { text: m.text },
+            start: m.start,
+            end: m.end,
+          })),
         },
       }
 

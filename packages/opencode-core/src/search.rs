@@ -16,6 +16,16 @@ pub struct SearchMatch {
     pub mod_time: i64,
     pub line_num: i32,
     pub line_text: String,
+    pub absolute_offset: i32,
+    pub submatches: Vec<Submatch>,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct Submatch {
+    pub text: String,
+    pub start: i32,
+    pub end: i32,
 }
 
 #[napi(object)]
@@ -321,25 +331,43 @@ pub fn search_content_advanced(
                 return Vec::new();
             }
             let text = String::from_utf8_lossy(&bytes);
-            text.lines()
-                .enumerate()
-                .filter_map(|(index, line)| {
-                    if !regex.is_match(line) {
-                        return None;
-                    }
-                    let line_text = if line.chars().count() > max_line {
-                        line.chars().take(max_line).collect::<String>() + "..."
-                    } else {
-                        line.to_string()
-                    };
-                    Some(SearchMatch {
-                        path: normalize_relative(root, file),
-                        mod_time: *mod_time,
-                        line_num: (index + 1) as i32,
-                        line_text,
+            let mut line_num = 0i32;
+            let mut offset = 0usize;
+            let mut found = Vec::new();
+
+            for segment in text.split_inclusive('\n') {
+                line_num += 1;
+                let no_nl = segment.strip_suffix('\n').unwrap_or(segment);
+                let raw = no_nl.strip_suffix('\r').unwrap_or(no_nl);
+                if !regex.is_match(raw) {
+                    offset += segment.len();
+                    continue;
+                }
+                let line_text = if raw.chars().count() > max_line {
+                    raw.chars().take(max_line).collect::<String>() + "..."
+                } else {
+                    raw.to_string()
+                };
+                let submatches = regex
+                    .find_iter(&line_text)
+                    .map(|m| Submatch {
+                        text: m.as_str().to_string(),
+                        start: m.start() as i32,
+                        end: m.end() as i32,
                     })
-                })
-                .collect::<Vec<_>>()
+                    .collect::<Vec<_>>();
+                found.push(SearchMatch {
+                    path: normalize_relative(root, file),
+                    mod_time: *mod_time,
+                    line_num,
+                    line_text,
+                    absolute_offset: offset as i32,
+                    submatches,
+                });
+                offset += segment.len();
+            }
+
+            found
         })
         .collect();
 
