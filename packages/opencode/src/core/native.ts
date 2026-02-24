@@ -97,6 +97,15 @@ export const listFiles = core.listFiles as (
   maxDepth?: number,
 ) => { files: string[]; hasErrors: boolean }
 
+export const listFilesSorted = core.listFilesSorted as (
+  searchPath: string,
+  globs?: string[],
+  includeHidden?: boolean,
+  followLinks?: boolean,
+  maxDepth?: number,
+  limit?: number,
+) => { files: { path: string; modTime: number }[]; total: number; hasErrors: boolean }
+
 export const indexPaths = core.indexPaths as (
   searchPath: string,
   includeHidden?: boolean,

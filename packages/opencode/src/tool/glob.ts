@@ -1,11 +1,10 @@
 import z from "zod"
 import path from "path"
 import { Tool } from "./tool"
-import { Filesystem } from "../util/filesystem"
 import DESCRIPTION from "./glob.txt"
-import { Ripgrep } from "../file/ripgrep"
 import { Instance } from "../project/instance"
 import { assertExternalDirectory } from "./external-directory"
+import { listFilesSorted } from "@/core/native"
 
 export const GlobTool = Tool.define("glob", {
   description: DESCRIPTION,
@@ -34,25 +33,11 @@ export const GlobTool = Tool.define("glob", {
     await assertExternalDirectory(ctx, search, { kind: "directory" })
 
     const limit = 100
-    const files = []
-    let truncated = false
-    for await (const file of Ripgrep.files({
-      cwd: search,
-      glob: [params.pattern],
-      signal: ctx.abort,
-    })) {
-      if (files.length >= limit) {
-        truncated = true
-        break
-      }
-      const full = path.resolve(search, file)
-      const stats = Filesystem.stat(full)?.mtime.getTime() ?? 0
-      files.push({
-        path: full,
-        mtime: stats,
-      })
-    }
-    files.sort((a, b) => b.mtime - a.mtime)
+    const result = listFilesSorted(search, [params.pattern], true, false, undefined, limit + 1)
+    const truncated = result.total > limit
+    const files = result.files.slice(0, limit).map((item) => ({
+      path: path.resolve(search, item.path),
+    }))
 
     const output = []
     if (files.length === 0) output.push("No files found")

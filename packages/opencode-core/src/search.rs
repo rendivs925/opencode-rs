@@ -35,6 +35,21 @@ pub struct FileListResult {
 
 #[napi(object)]
 #[derive(Clone)]
+pub struct FileStat {
+    pub path: String,
+    pub mod_time: i64,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct FileListSortedResult {
+    pub files: Vec<FileStat>,
+    pub total: i32,
+    pub has_errors: bool,
+}
+
+#[napi(object)]
+#[derive(Clone)]
 pub struct IndexedPaths {
     pub files: Vec<String>,
     pub dirs: Vec<String>,
@@ -81,6 +96,43 @@ pub fn list_files(
         .collect();
     Ok(FileListResult {
         files,
+        has_errors: has_errors.load(AtomicOrdering::Relaxed),
+    })
+}
+
+#[napi]
+pub fn list_files_sorted(
+    search_path: String,
+    globs: Option<Vec<String>>,
+    include_hidden: Option<bool>,
+    follow_links: Option<bool>,
+    max_depth: Option<i32>,
+    limit: Option<i32>,
+) -> Result<FileListSortedResult> {
+    let root = Path::new(&search_path);
+    let hidden = include_hidden.unwrap_or(true);
+    let follow = follow_links.unwrap_or(false);
+    let depth = max_depth.map(|d| d.max(0) as usize);
+    let has_errors = AtomicBool::new(false);
+    let mut files = collect_files(root, globs.as_ref(), hidden, follow, depth, &has_errors)?;
+    files.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let total = files.len() as i32;
+    if let Some(max) = limit {
+        let max = max.max(0) as usize;
+        if files.len() > max {
+            files.truncate(max);
+        }
+    }
+    let files = files
+        .into_iter()
+        .map(|(p, m)| FileStat {
+            path: normalize_relative(root, &p),
+            mod_time: m,
+        })
+        .collect();
+    Ok(FileListSortedResult {
+        files,
+        total,
         has_errors: has_errors.load(AtomicOrdering::Relaxed),
     })
 }

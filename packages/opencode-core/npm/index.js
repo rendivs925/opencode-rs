@@ -33,6 +33,7 @@ module.exports = {
   overlapsPath: native.overlapsPath,
   listDirectory: native.listDirectory,
   listFiles: native.listFiles,
+  listFilesSorted: native.listFilesSorted,
   indexPaths: native.indexPaths,
   renderTree: native.renderTree,
   searchPaths: native.searchPaths,
