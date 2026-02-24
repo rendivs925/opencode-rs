@@ -81,11 +81,12 @@ extractTarGz(archivePath: string, outputDir: string): ArchiveEntry[]
 ### Cache
 
 ```typescript
-createCache(cacheDir: string): Cache
 writeGlobCache(cacheDir: string, key: string, value: string[]): void
 readGlobCache(cacheDir: string, key: string): string[] | null
 writeTokenCache(cacheDir: string, key: string, value: number): void
 readTokenCache(cacheDir: string, key: string): number | null
+clearCache(cacheDir: string): void
+deleteCache(cacheDir: string, key: string): void
 ```
 
 ### File Watcher

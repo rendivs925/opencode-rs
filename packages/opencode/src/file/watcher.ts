@@ -16,8 +16,24 @@ import { Flag } from "@/flag/flag"
 import { readdir } from "fs/promises"
 
 const SUBSCRIBE_TIMEOUT_MS = 10_000
+const POLL_MS = 100
 
 declare const OPENCODE_LIBC: string | undefined
+
+type CoreEvent = {
+  path: string
+  kind: string
+}
+
+type CoreWatcher = {
+  watch: (path: string) => void
+  unwatch: () => void
+  nextEvent: () => CoreEvent | null | undefined
+}
+
+type Core = {
+  FileWatcher?: new () => CoreWatcher
+}
 
 export namespace FileWatcher {
   const log = Log.create({ service: "file.watcher" })
@@ -59,6 +75,73 @@ export namespace FileWatcher {
       }
       log.info("watcher backend", { platform: process.platform, backend })
 
+      const cfgIgnores = cfg.watcher?.ignore ?? []
+      const core = (await import("@opencode-ai/core").catch(() => undefined)) as Core | undefined
+      const ctor = core?.FileWatcher
+      if (Flag.OPENCODE_EXPERIMENTAL_FILEWATCHER && ctor) {
+        const watched = [{ dir: Instance.directory, ignore: [...FileIgnore.PATTERNS, ...cfgIgnores] }]
+        if (Instance.project.vcs === "git") {
+          const vcsDir = await $`git rev-parse --git-dir`
+            .quiet()
+            .nothrow()
+            .cwd(Instance.worktree)
+            .text()
+            .then((x) => path.resolve(Instance.worktree, x.trim()))
+            .catch(() => undefined)
+          if (vcsDir && !cfgIgnores.includes(".git") && !cfgIgnores.includes(vcsDir)) {
+            const gitDirContents = await readdir(vcsDir).catch(() => [])
+            watched.push({
+              dir: vcsDir,
+              ignore: gitDirContents.filter((entry) => entry !== "HEAD"),
+            })
+          }
+        }
+
+        const rust = watched.flatMap((item) => {
+          const w = new ctor()
+          const ok = Promise.resolve()
+            .then(() => w.watch(item.dir))
+            .then(() => true)
+            .catch((error) => {
+              log.error("failed to start rust watcher", { error, path: item.dir })
+              return false
+            })
+          return [{ dir: item.dir, ignore: item.ignore, watcher: w, ok }]
+        })
+
+        const ready = await Promise.all(rust.map((item) => item.ok))
+        const active = rust.filter((_, i) => ready[i])
+        if (!active.length) return {}
+
+        const timer = setInterval(() => {
+          for (const item of active) {
+            for (;;) {
+              const evt = item.watcher.nextEvent()
+              if (!evt) break
+              const rel = path.relative(item.dir, evt.path)
+              const file = rel.startsWith("..") ? evt.path : rel
+              if (FileIgnore.match(file, { extra: item.ignore })) continue
+              if (evt.kind === "create") Bus.publish(Event.Updated, { file: evt.path, event: "add" })
+              if (evt.kind === "write") Bus.publish(Event.Updated, { file: evt.path, event: "change" })
+              if (evt.kind === "remove") Bus.publish(Event.Updated, { file: evt.path, event: "unlink" })
+            }
+          }
+        }, POLL_MS)
+
+        return {
+          stop: async () => {
+            clearInterval(timer)
+            await Promise.all(
+              active.map((item) =>
+                Promise.resolve()
+                  .then(() => item.watcher.unwatch())
+                  .catch(() => {}),
+              ),
+            )
+          },
+        }
+      }
+
       const w = watcher()
       if (!w) return {}
 
@@ -72,7 +155,6 @@ export namespace FileWatcher {
       }
 
       const subs: ParcelWatcher.AsyncSubscription[] = []
-      const cfgIgnores = cfg.watcher?.ignore ?? []
 
       if (Flag.OPENCODE_EXPERIMENTAL_FILEWATCHER) {
         const pending = w.subscribe(Instance.directory, subscribe, {
@@ -114,6 +196,10 @@ export namespace FileWatcher {
       return { subs }
     },
     async (state) => {
+      if (state.stop) {
+        await state.stop()
+        return
+      }
       if (!state.subs) return
       await Promise.all(state.subs.map((sub) => sub?.unsubscribe()))
     },

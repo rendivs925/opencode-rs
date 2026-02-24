@@ -1,0 +1,51 @@
+name: opencode-core-prebuild
+
+on:
+  push:
+    branches:
+      - dev
+    paths:
+      - "packages/opencode-core/**"
+      - ".github/workflows/opencode-core-prebuild.yml"
+  pull_request:
+    paths:
+      - "packages/opencode-core/**"
+      - ".github/workflows/opencode-core-prebuild.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        settings:
+          - host: blacksmith-4vcpu-ubuntu-2404
+            name: linux-x64
+          - host: macos-latest
+            name: darwin-x64
+          - host: blacksmith-4vcpu-windows-2025
+            name: win32-x64
+    runs-on: ${{ matrix.settings.host }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build prebuild
+        working-directory: packages/opencode-core
+        run: bunx @napi-rs/cli build --release --platform
+
+      - name: Upload prebuild artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencode-core-${{ matrix.settings.name }}
+          path: packages/opencode-core/prebuilds
+          if-no-files-found: error

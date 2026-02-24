@@ -24,11 +24,12 @@ module.exports = {
   listArchiveContents: native.list_archive_contents,
   readArchiveEntry: native.read_archive_entry,
   extractTarGz: native.extract_tar_gz,
-  createCache: native.create_cache,
   writeGlobCache: native.write_glob_cache,
   readGlobCache: native.read_glob_cache,
   writeTokenCache: native.write_token_cache,
   readTokenCache: native.read_token_cache,
+  clearCache: native.clear_cache,
+  deleteCache: native.delete_cache,
   FileWatcher: native.FileWatcher,
   CompiledIgnore: native.CompiledIgnore,
 }
