@@ -8,6 +8,9 @@ try {
 module.exports = {
   glob: native.glob,
   globParallel: native.globParallel,
+  globScan: native.globScan,
+  globScanParallel: native.globScanParallel,
+  globMatch: native.globMatch,
   countTokens: native.countTokens,
   countTokensFromText: native.countTokensFromText,
   countTokensStreaming: native.countTokensStreaming,

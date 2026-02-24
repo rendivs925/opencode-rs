@@ -16,6 +16,28 @@ export const globParallel = core.globParallel as (
   followLinks?: boolean,
 ) => string[]
 
+export const globScan = core.globScan as (
+  pattern: string,
+  cwd: string,
+  maxDepth?: number,
+  includeHidden?: boolean,
+  followLinks?: boolean,
+  includeAll?: boolean,
+  absolute?: boolean,
+) => string[]
+
+export const globScanParallel = core.globScanParallel as (
+  pattern: string,
+  cwd: string,
+  maxDepth?: number,
+  includeHidden?: boolean,
+  followLinks?: boolean,
+  includeAll?: boolean,
+  absolute?: boolean,
+) => string[]
+
+export const globMatch = core.globMatch as (pattern: string, filepath: string) => boolean
+
 export const countTokens = core.countTokens as (path: string, encoding: string) => number
 export const countTokensFromText = core.countTokensFromText as (text: string, encoding: string) => number
 export const countTokensStreaming = core.countTokensStreaming as (
@@ -61,7 +83,12 @@ export const FileWatcher = core.FileWatcher as new () => {
   nextEvents(limit?: number, ignorePatterns?: string[]): { path: string; kind: "add" | "change" | "unlink" }[]
 }
 
-export const CompiledIgnore = core.CompiledIgnore as new () => unknown
+export const CompiledIgnore = core.CompiledIgnore as new () => {
+  isIgnored(path: string): boolean
+  filter(paths: string[]): string[]
+  isIgnoredWith(path: string, extraPatterns?: string[], whitelist?: string[]): boolean
+  filterWith(paths: string[], extraPatterns?: string[], whitelist?: string[]): string[]
+}
 
 export const containsPath = core.containsPath as (parent: string, child: string) => boolean
 export const overlapsPath = core.overlapsPath as (a: string, b: string) => boolean

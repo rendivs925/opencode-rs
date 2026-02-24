@@ -13,6 +13,25 @@ declare module "@opencode-ai/core" {
     includeHidden?: boolean,
     followLinks?: boolean,
   ): string[]
+  export function globScan(
+    pattern: string,
+    cwd: string,
+    maxDepth?: number,
+    includeHidden?: boolean,
+    followLinks?: boolean,
+    includeAll?: boolean,
+    absolute?: boolean,
+  ): string[]
+  export function globScanParallel(
+    pattern: string,
+    cwd: string,
+    maxDepth?: number,
+    includeHidden?: boolean,
+    followLinks?: boolean,
+    includeAll?: boolean,
+    absolute?: boolean,
+  ): string[]
+  export function globMatch(pattern: string, filepath: string): boolean
 
   export function countTokens(path: string, encoding: string): number
   export function countTokensFromText(text: string, encoding: string): number
@@ -72,5 +91,7 @@ declare module "@opencode-ai/core" {
   export class CompiledIgnore {
     isIgnored(path: string): boolean
     filter(paths: string[]): string[]
+    isIgnoredWith(path: string, extraPatterns?: string[], whitelist?: string[]): boolean
+    filterWith(paths: string[], extraPatterns?: string[], whitelist?: string[]): string[]
   }
 }

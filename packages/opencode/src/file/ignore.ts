@@ -1,6 +1,5 @@
-import { compilePatterns, isIgnored } from "@/core/native"
+import { compilePatterns } from "@/core/native"
 import { sep } from "node:path"
-import { Glob } from "../util/glob"
 
 export namespace FileIgnore {
   const FOLDERS = new Set([
@@ -59,6 +58,7 @@ export namespace FileIgnore {
   export const PATTERNS = [...FILES, ...FOLDER_PATTERNS]
   const COMPILED = compilePatterns(PATTERNS) as {
     isIgnored(path: string): boolean
+    isIgnoredWith(path: string, extraPatterns?: string[], whitelist?: string[]): boolean
   }
 
   export function match(
@@ -68,13 +68,10 @@ export namespace FileIgnore {
       whitelist?: string[]
     },
   ) {
-    for (const pattern of opts?.whitelist || []) {
-      if (Glob.match(pattern, filepath)) return false
-    }
-
     const extra = opts?.extra || []
     const normalized = filepath.split(sep).join("/")
-    if (!extra.length) return COMPILED.isIgnored(normalized)
-    return isIgnored(normalized, [...PATTERNS, ...extra])
+    const whitelist = opts?.whitelist || []
+    if (!extra.length && !whitelist.length) return COMPILED.isIgnored(normalized)
+    return COMPILED.isIgnoredWith(normalized, extra, whitelist)
   }
 }

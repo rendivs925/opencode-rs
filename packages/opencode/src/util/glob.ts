@@ -1,4 +1,4 @@
-import { glob, globParallel, isIgnored, readGlobCache, writeGlobCache } from "@/core/native"
+import { globMatch, globScan, globScanParallel, readGlobCache, writeGlobCache } from "@/core/native"
 import fs from "fs"
 import path from "path"
 import os from "os"
@@ -31,49 +31,65 @@ export namespace Glob {
     ].join("|")
   }
 
-  function normalizeRust(results: string[], options: Options) {
-    const cwd = path.resolve(options.cwd ?? ".")
-    const abs = results.map((item) => (path.isAbsolute(item) ? item : path.resolve(item)))
-    const filtered =
-      options.include === "all"
-        ? abs
-        : abs.filter((item) => {
-            const stat = fs.statSync(item, { throwIfNoEntry: false })
-            return !!stat?.isFile()
-          })
-    if (options.absolute) return filtered
-    return filtered.map((item) => path.relative(cwd, item).split(path.sep).join("/"))
-  }
-
   export async function scan(pattern: string, options: Options = {}): Promise<string[]> {
+    const includeAll = options.include === "all"
     if (options.cache !== false) {
       const k = key(pattern, options)
       const cached = readGlobCache(DIR, k)
       if (cached != null) return cached
-      const results = glob(pattern, options.cwd ?? ".", 10, options.dot ?? false, options.symlink ?? false)
-      const normalized = normalizeRust(results, options)
-      writeGlobCache(DIR, k, normalized)
-      return normalized
+      const results = globScan(
+        pattern,
+        options.cwd ?? ".",
+        10,
+        options.dot ?? false,
+        options.symlink ?? false,
+        includeAll,
+        options.absolute ?? false,
+      )
+      writeGlobCache(DIR, k, results)
+      return results
     }
-    const results = glob(pattern, options.cwd ?? ".", 10, options.dot ?? false, options.symlink ?? false)
-    return normalizeRust(results, options)
+    return globScan(
+      pattern,
+      options.cwd ?? ".",
+      10,
+      options.dot ?? false,
+      options.symlink ?? false,
+      includeAll,
+      options.absolute ?? false,
+    )
   }
 
   export function scanSync(pattern: string, options: Options = {}): string[] {
+    const includeAll = options.include === "all"
     if (options.cache !== false) {
       const k = key(pattern, options)
       const cached = readGlobCache(DIR, k)
       if (cached != null) return cached
-      const results = globParallel(pattern, options.cwd ?? ".", 10, options.dot ?? false, options.symlink ?? false)
-      const normalized = normalizeRust(results, options)
-      writeGlobCache(DIR, k, normalized)
-      return normalized
+      const results = globScanParallel(
+        pattern,
+        options.cwd ?? ".",
+        10,
+        options.dot ?? false,
+        options.symlink ?? false,
+        includeAll,
+        options.absolute ?? false,
+      )
+      writeGlobCache(DIR, k, results)
+      return results
     }
-    const results = globParallel(pattern, options.cwd ?? ".", 10, options.dot ?? false, options.symlink ?? false)
-    return normalizeRust(results, options)
+    return globScanParallel(
+      pattern,
+      options.cwd ?? ".",
+      10,
+      options.dot ?? false,
+      options.symlink ?? false,
+      includeAll,
+      options.absolute ?? false,
+    )
   }
 
   export function match(pattern: string, filepath: string): boolean {
-    return isIgnored(filepath, [pattern])
+    return globMatch(pattern, filepath)
   }
 }
