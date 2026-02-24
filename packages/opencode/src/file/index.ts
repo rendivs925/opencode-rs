@@ -4,13 +4,12 @@ import { $ } from "bun"
 import { formatPatch, structuredPatch } from "diff"
 import path from "path"
 import fs from "fs"
-import ignore from "ignore"
 import { Log } from "../util/log"
 import { Filesystem } from "../util/filesystem"
 import { Instance } from "../project/instance"
 import fuzzysort from "fuzzysort"
 import { Global } from "../global"
-import { indexPaths, searchPaths } from "@/core/native"
+import { indexPaths, listDirectory, searchPaths } from "@/core/native"
 
 export namespace File {
   const log = Log.create({ service: "file" })
@@ -554,18 +553,16 @@ export namespace File {
   export async function list(dir?: string) {
     const exclude = [".git", ".DS_Store"]
     const project = Instance.project
-    let ignored = (_: string) => false
+    const patterns: string[] = []
     if (project.vcs === "git") {
-      const ig = ignore()
       const gitignorePath = path.join(Instance.worktree, ".gitignore")
       if (await Filesystem.exists(gitignorePath)) {
-        ig.add(await Filesystem.readText(gitignorePath))
+        patterns.push(...(await Filesystem.readText(gitignorePath)).split(/\r?\n/))
       }
       const ignorePath = path.join(Instance.worktree, ".ignore")
       if (await Filesystem.exists(ignorePath)) {
-        ig.add(await Filesystem.readText(ignorePath))
+        patterns.push(...(await Filesystem.readText(ignorePath)).split(/\r?\n/))
       }
-      ignored = ig.ignores.bind(ig)
     }
     const resolved = dir ? path.join(Instance.directory, dir) : Instance.directory
 
@@ -575,29 +572,14 @@ export namespace File {
       throw new Error(`Access denied: path escapes project directory`)
     }
 
-    const nodes: Node[] = []
-    for (const entry of await fs.promises
-      .readdir(resolved, {
-        withFileTypes: true,
-      })
-      .catch(() => [])) {
-      if (exclude.includes(entry.name)) continue
-      const fullPath = path.join(resolved, entry.name)
-      const relativePath = path.relative(Instance.directory, fullPath)
-      const type = entry.isDirectory() ? "directory" : "file"
-      nodes.push({
+    return listDirectory(resolved, Instance.directory, exclude, patterns).map((entry) => {
+      return {
         name: entry.name,
-        path: relativePath,
-        absolute: fullPath,
-        type,
-        ignored: ignored(type === "directory" ? relativePath + "/" : relativePath),
-      })
-    }
-    return nodes.sort((a, b) => {
-      if (a.type !== b.type) {
-        return a.type === "directory" ? -1 : 1
+        path: entry.path,
+        absolute: entry.absolute,
+        type: entry.entryType,
+        ignored: entry.ignored,
       }
-      return a.name.localeCompare(b.name)
     })
   }
 

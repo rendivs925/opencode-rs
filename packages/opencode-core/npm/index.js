@@ -31,6 +31,7 @@ module.exports = {
   deleteCache: native.deleteCache,
   containsPath: native.containsPath,
   overlapsPath: native.overlapsPath,
+  listDirectory: native.listDirectory,
   listFiles: native.listFiles,
   indexPaths: native.indexPaths,
   renderTree: native.renderTree,

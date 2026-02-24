@@ -64,6 +64,18 @@ export const CompiledIgnore = core.CompiledIgnore as new () => unknown
 
 export const containsPath = core.containsPath as (parent: string, child: string) => boolean
 export const overlapsPath = core.overlapsPath as (a: string, b: string) => boolean
+export const listDirectory = core.listDirectory as (
+  dir: string,
+  base: string,
+  exclude?: string[],
+  ignorePatterns?: string[],
+) => {
+  name: string
+  path: string
+  absolute: string
+  entryType: "file" | "directory"
+  ignored: boolean
+}[]
 
 export const searchContent = core.searchContent as (
   pattern: string,
