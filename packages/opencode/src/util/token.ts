@@ -9,7 +9,12 @@ export namespace Token {
   const CHARS_PER_TOKEN = 4
 
   export function estimate(input: string) {
-    return Math.max(0, Math.round((input || "").length / CHARS_PER_TOKEN))
+    const text = input || ""
+    if (core?.countTokensFromText) {
+      const count = core.countTokensFromText(text, "cl100k_base")
+      if (Number.isFinite(count) && count >= 0) return count
+    }
+    return Math.max(0, Math.round(text.length / CHARS_PER_TOKEN))
   }
 
   export function count(input: string, encoding: string = "cl100k_base") {
