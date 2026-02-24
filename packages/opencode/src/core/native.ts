@@ -85,6 +85,31 @@ export const listFiles = core.listFiles as (
   maxDepth?: number,
 ) => { files: string[]; hasErrors: boolean }
 
+export const indexPaths = core.indexPaths as (
+  searchPath: string,
+  includeHidden?: boolean,
+  followLinks?: boolean,
+  maxDepth?: number,
+) => { files: string[]; dirs: string[]; hasErrors: boolean }
+
+export const renderTree = core.renderTree as (
+  searchPath: string,
+  limit?: number,
+  includeHidden?: boolean,
+  followLinks?: boolean,
+  maxDepth?: number,
+) => string
+
+export const searchPaths = core.searchPaths as (
+  searchPath: string,
+  query: string,
+  kind: "file" | "directory" | "all",
+  limit?: number,
+  includeHidden?: boolean,
+  followLinks?: boolean,
+  maxDepth?: number,
+) => string[]
+
 export const searchContentAdvanced = core.searchContentAdvanced as (
   pattern: string,
   searchPath: string,

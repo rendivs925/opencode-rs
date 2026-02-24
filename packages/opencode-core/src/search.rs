@@ -3,8 +3,10 @@ use ignore::WalkBuilder;
 use napi::Result;
 use rayon::prelude::*;
 use regex::Regex;
+use std::cmp::Ordering;
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::time::UNIX_EPOCH;
 
 #[napi(object)]
@@ -28,6 +30,14 @@ pub struct SearchResult {
 #[derive(Clone)]
 pub struct FileListResult {
     pub files: Vec<String>,
+    pub has_errors: bool,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct IndexedPaths {
+    pub files: Vec<String>,
+    pub dirs: Vec<String>,
     pub has_errors: bool,
 }
 
@@ -71,8 +81,158 @@ pub fn list_files(
         .collect();
     Ok(FileListResult {
         files,
-        has_errors: has_errors.load(Ordering::Relaxed),
+        has_errors: has_errors.load(AtomicOrdering::Relaxed),
     })
+}
+
+#[napi]
+pub fn index_paths(
+    search_path: String,
+    include_hidden: Option<bool>,
+    follow_links: Option<bool>,
+    max_depth: Option<i32>,
+) -> Result<IndexedPaths> {
+    let root = Path::new(&search_path);
+    let hidden = include_hidden.unwrap_or(true);
+    let follow = follow_links.unwrap_or(false);
+    let depth = max_depth.map(|d| d.max(0) as usize);
+    let has_errors = AtomicBool::new(false);
+    let files = collect_files(root, None, hidden, follow, depth, &has_errors)?
+        .into_iter()
+        .map(|(file, _)| normalize_relative(root, &file))
+        .collect::<Vec<_>>();
+    let dirs = build_dirs(&files);
+
+    Ok(IndexedPaths {
+        files,
+        dirs,
+        has_errors: has_errors.load(AtomicOrdering::Relaxed),
+    })
+}
+
+#[napi]
+pub fn render_tree(
+    search_path: String,
+    limit: Option<i32>,
+    include_hidden: Option<bool>,
+    follow_links: Option<bool>,
+    max_depth: Option<i32>,
+) -> Result<String> {
+    let indexed = index_paths(
+        search_path,
+        include_hidden,
+        follow_links,
+        max_depth,
+    )?;
+    let mut children = HashMap::<String, BTreeSet<String>>::new();
+    let mut all = HashSet::<String>::new();
+
+    for dir in indexed
+        .dirs
+        .into_iter()
+        .map(|d| d.trim_end_matches('/').to_string())
+        .filter(|d| !d.contains(".opencode"))
+    {
+        all.insert(dir.clone());
+        let parent = dir
+            .rsplit_once('/')
+            .map(|(p, _)| p.to_string())
+            .unwrap_or_else(String::new);
+        children.entry(parent).or_default().insert(dir);
+    }
+
+    let total = all.len();
+    let max = limit.unwrap_or(total as i32).max(0) as usize;
+    let mut queue = VecDeque::new();
+    if let Some(root) = children.get("") {
+        for child in root {
+            queue.push_back(child.clone());
+        }
+    }
+
+    let mut lines = Vec::new();
+    let mut used = 0usize;
+
+    while let Some(item) = queue.pop_front() {
+        if used >= max {
+            break;
+        }
+        lines.push(item.clone());
+        used += 1;
+        if let Some(next) = children.get(&item) {
+            for child in next {
+                queue.push_back(child.clone());
+            }
+        }
+    }
+
+    if total > used {
+        lines.push(format!("[{} truncated]", total - used));
+    }
+
+    Ok(lines.join("\n"))
+}
+
+#[napi]
+pub fn search_paths(
+    search_path: String,
+    query: String,
+    kind: String,
+    limit: Option<i32>,
+    include_hidden: Option<bool>,
+    follow_links: Option<bool>,
+    max_depth: Option<i32>,
+) -> Result<Vec<String>> {
+    let query = query.trim().to_string();
+    let limit = limit.unwrap_or(100).max(1) as usize;
+    let indexed = index_paths(search_path, include_hidden, follow_links, max_depth)?;
+    let mut dirs = indexed.dirs;
+    dirs.sort();
+
+    let prefer_hidden = query.starts_with('.') || query.contains("/.");
+
+    if query.is_empty() {
+        if kind == "file" {
+            return Ok(indexed.files.into_iter().take(limit).collect());
+        }
+        if kind == "directory" || kind == "all" {
+            return Ok(sort_hidden_last(dirs, prefer_hidden).into_iter().take(limit).collect());
+        }
+        return Ok(Vec::new());
+    }
+
+    let items = if kind == "file" {
+        indexed.files
+    } else if kind == "directory" {
+        dirs.clone()
+    } else {
+        let mut all = indexed.files;
+        all.extend(dirs.clone());
+        all
+    };
+
+    let mut ranked = items
+        .into_iter()
+        .filter_map(|item| score_item(&query, &item).map(|score| (item, score)))
+        .collect::<Vec<_>>();
+
+    ranked.sort_by(|a, b| compare_ranked(a, b));
+
+    if kind == "directory" {
+        let search_limit = if prefer_hidden { limit } else { limit * 20 };
+        let top = ranked
+            .into_iter()
+            .take(search_limit)
+            .map(|(item, _)| item)
+            .collect::<Vec<_>>();
+        return Ok(sort_hidden_last(top, prefer_hidden).into_iter().take(limit).collect());
+    }
+
+    Ok(ranked
+        .into_iter()
+        .take(limit)
+        .map(|(item, _)| item)
+        .collect())
 }
 
 #[napi]
@@ -101,7 +261,7 @@ pub fn search_content_advanced(
             let bytes = match std::fs::read(file) {
                 Ok(v) => v,
                 Err(_) => {
-                    has_errors.store(true, Ordering::Relaxed);
+                    has_errors.store(true, AtomicOrdering::Relaxed);
                     return Vec::new();
                 }
             };
@@ -148,7 +308,7 @@ pub fn search_content_advanced(
 
     Ok(SearchResult {
         matches,
-        has_errors: has_errors.load(Ordering::Relaxed),
+        has_errors: has_errors.load(AtomicOrdering::Relaxed),
         total_matches,
     })
 }
@@ -177,7 +337,7 @@ fn collect_files(
 
     for entry in walker.build() {
         let Ok(entry) = entry else {
-            has_errors.store(true, Ordering::Relaxed);
+            has_errors.store(true, AtomicOrdering::Relaxed);
             continue;
         };
         let entry_path = entry.path();
@@ -253,4 +413,80 @@ fn normalize_relative(root: &Path, path: &Path) -> String {
 fn is_binary(bytes: &[u8]) -> bool {
     let len = bytes.len().min(8192);
     bytes[..len].contains(&0)
+}
+
+fn build_dirs(files: &[String]) -> Vec<String> {
+    let mut set = BTreeSet::new();
+    for file in files {
+        let mut current = file.as_str();
+        while let Some((dir, _)) = current.rsplit_once('/') {
+            if dir.is_empty() {
+                break;
+            }
+            if !set.insert(format!("{dir}/")) {
+                current = dir;
+                continue;
+            }
+            current = dir;
+        }
+    }
+    set.into_iter().collect()
+}
+
+fn score_item(query: &str, item: &str) -> Option<i32> {
+    let q = query.to_lowercase();
+    let t = item.to_lowercase();
+
+    if let Some(pos) = t.find(&q) {
+        let score = 100_000 - (pos as i32 * 10) - (t.len() as i32 - q.len() as i32).max(0);
+        return Some(score);
+    }
+
+    let mut q_chars = q.chars();
+    let mut target = q_chars.next()?;
+    let mut gaps = 0;
+    let mut matched = 0;
+
+    for ch in t.chars() {
+        if ch == target {
+            matched += 1;
+            if let Some(next) = q_chars.next() {
+                target = next;
+                continue;
+            }
+            let score = 50_000 - gaps - (t.len() as i32 - q.len() as i32).max(0);
+            return Some(score + matched);
+        }
+        gaps += 1;
+    }
+
+    None
+}
+
+fn compare_ranked(a: &(String, i32), b: &(String, i32)) -> Ordering {
+    b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0))
+}
+
+fn sort_hidden_last(items: Vec<String>, prefer_hidden: bool) -> Vec<String> {
+    if prefer_hidden {
+        return items;
+    }
+    let mut visible = Vec::new();
+    let mut hidden = Vec::new();
+    for item in items {
+        if is_hidden_text(&item) {
+            hidden.push(item);
+            continue;
+        }
+        visible.push(item);
+    }
+    visible.extend(hidden);
+    visible
+}
+
+fn is_hidden_text(value: &str) -> bool {
+    let normalized = value.trim_end_matches('/');
+    normalized
+        .split('/')
+        .any(|part| part.starts_with('.') && part.len() > 1)
 }

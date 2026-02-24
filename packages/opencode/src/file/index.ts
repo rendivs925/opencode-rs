@@ -8,9 +8,9 @@ import ignore from "ignore"
 import { Log } from "../util/log"
 import { Filesystem } from "../util/filesystem"
 import { Instance } from "../project/instance"
-import { Ripgrep } from "./ripgrep"
 import fuzzysort from "fuzzysort"
 import { Global } from "../global"
+import { indexPaths, searchPaths } from "@/core/native"
 
 export namespace File {
   const log = Log.create({ service: "file" })
@@ -379,18 +379,15 @@ export namespace File {
       }
 
       const set = new Set<string>()
-      for await (const file of Ripgrep.files({ cwd: Instance.directory })) {
+      const indexed = indexPaths(Instance.directory, true, false)
+      for (const file of indexed.files) {
         result.files.push(file)
-        let current = file
-        while (true) {
-          const dir = path.dirname(current)
-          if (dir === ".") break
-          if (dir === current) break
-          current = dir
-          if (set.has(dir)) continue
-          set.add(dir)
-          result.dirs.push(dir + "/")
-        }
+      }
+      for (const dir of indexed.dirs) {
+        const normalized = dir.replace(/\/+$/, "")
+        if (!normalized || set.has(normalized)) continue
+        set.add(normalized)
+        result.dirs.push(normalized + "/")
       }
       cache = result
       fetching = false
@@ -609,6 +606,12 @@ export namespace File {
     const limit = input.limit ?? 100
     const kind = input.type ?? (input.dirs === false ? "file" : "all")
     log.info("search", { query, kind })
+    const isGlobalHome = Instance.directory === Global.Path.home && Instance.project.id === "global"
+    if (!isGlobalHome) {
+      const output = searchPaths(Instance.directory, query, kind, limit, true, false)
+      log.info("search", { query, kind, results: output.length })
+      return output
+    }
 
     const result = await state().then((x) => x.files())
 

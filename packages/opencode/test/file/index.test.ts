@@ -81,6 +81,42 @@ describe("file/index Filesystem patterns", () => {
     })
   })
 
+  describe("File.search() - native ranking pipeline", () => {
+    test("searches files by query", async () => {
+      await using tmp = await tmpdir({
+        init: async (dir) => {
+          await Bun.write(path.join(dir, "src", "alpha.ts"), "export const a = 1\n")
+          await Bun.write(path.join(dir, "src", "beta.ts"), "export const b = 2\n")
+          await Bun.write(path.join(dir, "docs", "guide.md"), "# Guide\n")
+        },
+      })
+
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const result = await File.search({ query: "alpha", type: "file", limit: 10 })
+          expect(result.some((item) => item.endsWith("src/alpha.ts"))).toBe(true)
+        },
+      })
+    })
+
+    test("returns directories for directory mode", async () => {
+      await using tmp = await tmpdir({
+        init: async (dir) => {
+          await Bun.write(path.join(dir, "src", "nested", "one.ts"), "export const one = 1\n")
+        },
+      })
+
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const result = await File.search({ query: "src", type: "directory", limit: 10 })
+          expect(result.some((item) => item === "src/" || item === "src/nested/")).toBe(true)
+        },
+      })
+    })
+  })
+
   describe("File.read() - binary content", () => {
     test("reads binary file via Filesystem.readArrayBuffer()", async () => {
       await using tmp = await tmpdir()
