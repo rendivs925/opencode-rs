@@ -206,6 +206,13 @@ export const searchPaths = core.searchPaths as (
   maxDepth?: number,
 ) => string[]
 
+export const searchIndexedPaths = core.searchIndexedPaths as (
+  indexed: { files: string[]; dirs: string[] },
+  query: string,
+  kind: "file" | "directory" | "all",
+  limit?: number,
+) => string[]
+
 export const searchContentAdvanced = core.searchContentAdvanced as (
   pattern: string,
   searchPath: string,
@@ -266,6 +273,15 @@ export const countUntrackedLines = core.countUntrackedLines as (
   root: string,
   files: string[],
 ) => { path: string; lines: number }[]
+
+export const gitStatus = core.gitStatus as (
+  root: string,
+) => { path: string; added: number; removed: number; status: "added" | "deleted" | "modified" }[]
+
+export const readDiffSnapshot = core.readDiffSnapshot as (
+  root: string,
+  file: string,
+) => { hasDiff: boolean; original: string }
 
 export const readAttachment = core.readAttachment as (path: string) => {
   isAttachment: boolean

@@ -1,14 +1,21 @@
 import { BusEvent } from "@/bus/bus-event"
 import z from "zod"
-import { $ } from "bun"
 import { formatPatch, structuredPatch } from "diff"
 import path from "path"
 import fs from "fs"
 import { Log } from "../util/log"
 import { Instance } from "../project/instance"
-import fuzzysort from "fuzzysort"
 import { Global } from "../global"
-import { countUntrackedLines, indexPathsCached, listDirectory, listDirectoryProject, readFull, searchPaths } from "@/core/native"
+import {
+  gitStatus,
+  indexPathsCached,
+  listDirectory,
+  listDirectoryProject,
+  readDiffSnapshot,
+  readFull,
+  searchIndexedPaths,
+  searchPaths,
+} from "@/core/native"
 
 export namespace File {
   const log = Log.create({ service: "file" })
@@ -154,66 +161,7 @@ export namespace File {
   export async function status() {
     const project = Instance.project
     if (project.vcs !== "git") return []
-
-    const diffOutput = await $`git -c core.quotepath=false diff --numstat HEAD`
-      .cwd(Instance.directory)
-      .quiet()
-      .nothrow()
-      .text()
-
-    const changedFiles: Info[] = []
-
-    if (diffOutput.trim()) {
-      const lines = diffOutput.trim().split("\n")
-      for (const line of lines) {
-        const [added, removed, filepath] = line.split("\t")
-        changedFiles.push({
-          path: filepath,
-          added: added === "-" ? 0 : parseInt(added, 10),
-          removed: removed === "-" ? 0 : parseInt(removed, 10),
-          status: "modified",
-        })
-      }
-    }
-
-    const untrackedOutput = await $`git -c core.quotepath=false ls-files --others --exclude-standard`
-      .cwd(Instance.directory)
-      .quiet()
-      .nothrow()
-      .text()
-
-    if (untrackedOutput.trim()) {
-      const untrackedFiles = untrackedOutput.trim().split("\n")
-      for (const item of countUntrackedLines(Instance.directory, untrackedFiles)) {
-        changedFiles.push({
-          path: item.path,
-          added: item.lines,
-          removed: 0,
-          status: "added",
-        })
-      }
-    }
-
-    // Get deleted files
-    const deletedOutput = await $`git -c core.quotepath=false diff --name-only --diff-filter=D HEAD`
-      .cwd(Instance.directory)
-      .quiet()
-      .nothrow()
-      .text()
-
-    if (deletedOutput.trim()) {
-      const deletedFiles = deletedOutput.trim().split("\n")
-      for (const filepath of deletedFiles) {
-        changedFiles.push({
-          path: filepath,
-          added: 0,
-          removed: 0, // Could get original line count but would require another git command
-          status: "deleted",
-        })
-      }
-    }
-
-    return changedFiles.map((x) => {
+    return gitStatus(Instance.directory).map((x) => {
       const full = path.isAbsolute(x.path) ? x.path : path.join(Instance.directory, x.path)
       return {
         ...x,
@@ -242,11 +190,9 @@ export namespace File {
     }
 
     if (project.vcs === "git") {
-      let diff = await $`git diff ${file}`.cwd(Instance.directory).quiet().nothrow().text()
-      if (!diff.trim()) diff = await $`git diff --staged ${file}`.cwd(Instance.directory).quiet().nothrow().text()
-      if (diff.trim()) {
-        const original = await $`git show HEAD:${file}`.cwd(Instance.directory).quiet().nothrow().text()
-        const patch = structuredPatch(file, file, original, content, "old", "new", {
+      const snapshot = readDiffSnapshot(Instance.directory, file)
+      if (snapshot.hasDiff) {
+        const patch = structuredPatch(file, file, snapshot.original, content, "old", "new", {
           context: Infinity,
           ignoreWhitespace: true,
         })
@@ -296,34 +242,7 @@ export namespace File {
     }
 
     const result = await state().then((x) => x.files())
-
-    const hidden = (item: string) => {
-      const normalized = item.replaceAll("\\", "/").replace(/\/+$/, "")
-      return normalized.split("/").some((p) => p.startsWith(".") && p.length > 1)
-    }
-    const preferHidden = query.startsWith(".") || query.includes("/.")
-    const sortHiddenLast = (items: string[]) => {
-      if (preferHidden) return items
-      const visible: string[] = []
-      const hiddenItems: string[] = []
-      for (const item of items) {
-        const isHidden = hidden(item)
-        if (isHidden) hiddenItems.push(item)
-        if (!isHidden) visible.push(item)
-      }
-      return [...visible, ...hiddenItems]
-    }
-    if (!query) {
-      if (kind === "file") return result.files.slice(0, limit)
-      return sortHiddenLast(result.dirs.toSorted()).slice(0, limit)
-    }
-
-    const items =
-      kind === "file" ? result.files : kind === "directory" ? result.dirs : [...result.files, ...result.dirs]
-
-    const searchLimit = kind === "directory" && !preferHidden ? limit * 20 : limit
-    const sorted = fuzzysort.go(query, items, { limit: searchLimit }).map((r) => r.target)
-    const output = kind === "directory" ? sortHiddenLast(sorted).slice(0, limit) : sorted
+    const output = searchIndexedPaths(result, query, kind, limit)
 
     log.info("search", { query, kind, results: output.length })
     return output

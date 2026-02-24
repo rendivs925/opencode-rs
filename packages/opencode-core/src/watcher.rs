@@ -2,6 +2,7 @@ use crate::error::CoreError;
 use ignore::gitignore::GitignoreBuilder;
 use napi::Result;
 use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::mpsc::{channel, Receiver};
 use std::time::Duration;
@@ -125,7 +126,7 @@ impl FileWatcher {
             ));
         }
 
-        Ok(out)
+        Ok(coalesce_events(out, max))
     }
 }
 
@@ -191,4 +192,58 @@ fn should_ignore(path: &str, patterns: Option<&Vec<String>>) -> bool {
         return matcher.matched(Path::new(path), false).is_ignore();
     }
     false
+}
+
+fn coalesce_events(events: Vec<FileEvent>, limit: usize) -> Vec<FileEvent> {
+    let mut order = Vec::new();
+    let mut map = HashMap::<String, String>::new();
+
+    for item in events {
+        if !map.contains_key(&item.path) {
+            order.push(item.path.clone());
+            map.insert(item.path, item.kind);
+            continue;
+        }
+        let prev = map.get(&item.path).cloned().unwrap_or_default();
+        let next = merge_kind(&prev, &item.kind);
+        if next.is_empty() {
+            map.remove(&item.path);
+            continue;
+        }
+        map.insert(item.path, next);
+    }
+
+    let mut out = Vec::new();
+    for path in order {
+        if out.len() >= limit {
+            break;
+        }
+        let Some(kind) = map.get(&path) else {
+            continue;
+        };
+        out.push(FileEvent {
+            path,
+            kind: kind.to_string(),
+        });
+    }
+    out
+}
+
+fn merge_kind(prev: &str, next: &str) -> String {
+    if prev == "add" && next == "change" {
+        return "add".to_string();
+    }
+    if prev == "add" && next == "unlink" {
+        return String::new();
+    }
+    if prev == "change" && next == "unlink" {
+        return "unlink".to_string();
+    }
+    if prev == "unlink" && next == "add" {
+        return "change".to_string();
+    }
+    if prev == "unlink" && next == "change" {
+        return "change".to_string();
+    }
+    next.to_string()
 }

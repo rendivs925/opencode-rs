@@ -1,4 +1,5 @@
 import { describe, test, expect } from "bun:test"
+import { $ } from "bun"
 import path from "path"
 import fs from "fs/promises"
 import { File } from "../../src/file"
@@ -76,6 +77,27 @@ describe("file/index Filesystem patterns", () => {
         fn: async () => {
           const result = await File.read("multiline.txt")
           expect(result.content).toBe("line1\nline2\nline3")
+        },
+      })
+    })
+
+    test("returns git diff patch metadata for modified tracked file", async () => {
+      await using tmp = await tmpdir({
+        git: true,
+        init: async (dir) => {
+          await fs.writeFile(path.join(dir, "tracked.txt"), "before\n", "utf-8")
+        },
+      })
+      await $`git add . && git commit -m init`.cwd(tmp.path).quiet()
+      await fs.writeFile(path.join(tmp.path, "tracked.txt"), "after\n", "utf-8")
+
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const result = await File.read("tracked.txt")
+          expect(result.type).toBe("text")
+          expect(result.patch).toBeDefined()
+          expect(result.diff).toContain("tracked.txt")
         },
       })
     })

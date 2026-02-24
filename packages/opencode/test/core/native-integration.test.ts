@@ -1,11 +1,15 @@
 import { describe, expect, test } from "bun:test"
+import { $ } from "bun"
 import path from "path"
 import { tmpdir } from "../fixture/fixture"
 import {
+  gitStatus,
   globScan,
   listDirectoryProject,
   listTree,
+  readDiffSnapshot,
   readFull,
+  searchIndexedPaths,
   searchContentRendered,
 } from "../../src/core/native"
 
@@ -50,5 +54,40 @@ describe("core/native integration contracts", () => {
 
     const nodes = listDirectoryProject(tmp.path, tmp.path, tmp.path, [".git", ".DS_Store"])
     expect(nodes.find((item) => item.name === "dist")?.ignored).toBe(true)
+  })
+
+  test("indexed search ranks and keeps hidden dirs behind visible entries", () => {
+    const result = searchIndexedPaths(
+      {
+        files: ["src/main.ts", ".cache/x.ts", "docs/guide.md"],
+        dirs: ["src/", ".cache/", "docs/"],
+      },
+      "",
+      "directory",
+      10,
+    )
+    expect(result[0]).toBe("docs/")
+    expect(result[1]).toBe("src/")
+    expect(result[result.length - 1]).toBe(".cache/")
+  })
+
+  test("git status and diff snapshot return structured data", async () => {
+    await using tmp = await tmpdir({
+      git: true,
+      init: async (dir) => {
+        await Bun.write(path.join(dir, "tracked.txt"), "a\n")
+      },
+    })
+    await $`git add . && git commit -m init`.cwd(tmp.path).quiet()
+    await Bun.write(path.join(tmp.path, "tracked.txt"), "b\n")
+    await Bun.write(path.join(tmp.path, "new.txt"), "x\ny\n")
+
+    const status = gitStatus(tmp.path)
+    expect(status.some((item) => item.path === "tracked.txt" && item.status === "modified")).toBe(true)
+    expect(status.some((item) => item.path === "new.txt" && item.status === "added")).toBe(true)
+
+    const snapshot = readDiffSnapshot(tmp.path, "tracked.txt")
+    expect(snapshot.hasDiff).toBe(true)
+    expect(snapshot.original).toContain("a")
   })
 })

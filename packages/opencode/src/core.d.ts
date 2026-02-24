@@ -102,6 +102,16 @@ declare module "@opencode-ai/core" {
   }
 
   export function countUntrackedLines(root: string, files: string[]): Array<{ path: string; lines: number }>
+  export function gitStatus(
+    root: string,
+  ): Array<{ path: string; added: number; removed: number; status: "added" | "deleted" | "modified" }>
+  export function readDiffSnapshot(root: string, file: string): { hasDiff: boolean; original: string }
+  export function searchIndexedPaths(
+    indexed: { files: string[]; dirs: string[] },
+    query: string,
+    kind: "file" | "directory" | "all",
+    limit?: number,
+  ): string[]
 
   export type NativeFileEvent = {
     path: string

@@ -1,6 +1,7 @@
 use base64::Engine;
 use napi::Result;
 use std::path::Path;
+use std::process::Command;
 
 const BINARY_EXTENSIONS: &[&str] = &[
     "zip", "tar", "gz", "exe", "dll", "so", "class", "jar", "war", "7z", "doc", "docx", "xls",
@@ -80,6 +81,22 @@ pub struct ReadFullResult {
 pub struct UntrackedLineCount {
     pub path: String,
     pub lines: i32,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct GitStatusEntry {
+    pub path: String,
+    pub added: i32,
+    pub removed: i32,
+    pub status: String,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct ReadDiffSnapshot {
+    pub has_diff: bool,
+    pub original: String,
 }
 
 #[napi]
@@ -233,6 +250,95 @@ pub fn count_untracked_lines(root: String, files: Vec<String>) -> Result<Vec<Unt
         })
         .collect();
     Ok(out)
+}
+
+#[napi]
+pub fn git_status(root: String) -> Result<Vec<GitStatusEntry>> {
+    let mut out = Vec::new();
+    let changed = run_git_lines(
+        &root,
+        ["-c", "core.quotepath=false", "diff", "--numstat", "HEAD"].as_slice(),
+    )?;
+    for line in changed {
+        let parts = line.split('\t').collect::<Vec<_>>();
+        if parts.len() < 3 {
+            continue;
+        }
+        out.push(GitStatusEntry {
+            path: parts[2].to_string(),
+            added: parts[0].parse::<i32>().unwrap_or(0),
+            removed: parts[1].parse::<i32>().unwrap_or(0),
+            status: "modified".to_string(),
+        });
+    }
+
+    let untracked = run_git_lines(
+        &root,
+        ["-c", "core.quotepath=false", "ls-files", "--others", "--exclude-standard"].as_slice(),
+    )?;
+    for item in count_untracked_lines(root.clone(), untracked)? {
+        out.push(GitStatusEntry {
+            path: item.path,
+            added: item.lines,
+            removed: 0,
+            status: "added".to_string(),
+        });
+    }
+
+    let deleted = run_git_lines(
+        &root,
+        ["-c", "core.quotepath=false", "diff", "--name-only", "--diff-filter=D", "HEAD"].as_slice(),
+    )?;
+    for path in deleted {
+        out.push(GitStatusEntry {
+            path,
+            added: 0,
+            removed: 0,
+            status: "deleted".to_string(),
+        });
+    }
+
+    Ok(out)
+}
+
+#[napi]
+pub fn read_diff_snapshot(root: String, file: String) -> Result<ReadDiffSnapshot> {
+    let unstaged = run_git_text(
+        &root,
+        ["diff", "--", file.as_str()].as_slice(),
+    )?;
+    let has_unstaged = !unstaged.trim().is_empty();
+    let head_spec = format!("HEAD:{file}");
+    if has_unstaged {
+        let original = run_git_text(
+            &root,
+            ["show", head_spec.as_str()].as_slice(),
+        )?;
+        return Ok(ReadDiffSnapshot {
+            has_diff: true,
+            original,
+        });
+    }
+
+    let staged = run_git_text(
+        &root,
+        ["diff", "--staged", "--", file.as_str()].as_slice(),
+    )?;
+    if staged.trim().is_empty() {
+        return Ok(ReadDiffSnapshot {
+            has_diff: false,
+            original: String::new(),
+        });
+    }
+
+    let original = run_git_text(
+        &root,
+        ["show", head_spec.as_str()].as_slice(),
+    )?;
+    Ok(ReadDiffSnapshot {
+        has_diff: true,
+        original,
+    })
 }
 
 #[napi]
@@ -467,4 +573,22 @@ fn should_encode(mime_type: &str) -> bool {
     }
     let top = mime.split('/').next().unwrap_or_default();
     matches!(top, "image" | "audio" | "video" | "font" | "model" | "multipart")
+}
+
+fn run_git_lines(root: &str, args: &[&str]) -> Result<Vec<String>> {
+    Ok(run_git_text(root, args)?
+        .lines()
+        .map(|line| line.to_string())
+        .filter(|line| !line.trim().is_empty())
+        .collect())
+}
+
+fn run_git_text(root: &str, args: &[&str]) -> Result<String> {
+    let mut cmd = Command::new("git");
+    cmd.args(args).current_dir(root);
+    let output = cmd.output().map_err(|e| napi::Error::from_reason(e.to_string()))?;
+    if !output.status.success() {
+        return Ok(String::new());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }

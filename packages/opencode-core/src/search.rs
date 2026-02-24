@@ -85,6 +85,13 @@ pub struct IndexedPaths {
     pub has_errors: bool,
 }
 
+#[napi(object)]
+#[derive(Clone)]
+pub struct SearchIndexedInput {
+    pub files: Vec<String>,
+    pub dirs: Vec<String>,
+}
+
 #[napi]
 pub fn search_content(
     pattern: String,
@@ -503,6 +510,62 @@ pub fn search_paths(
 
     ranked.sort_by(|a, b| compare_ranked(a, b));
 
+    if kind == "directory" {
+        let search_limit = if prefer_hidden { limit } else { limit * 20 };
+        let top = ranked
+            .into_iter()
+            .take(search_limit)
+            .map(|(item, _)| item)
+            .collect::<Vec<_>>();
+        return Ok(sort_hidden_last(top, prefer_hidden).into_iter().take(limit).collect());
+    }
+
+    Ok(ranked
+        .into_iter()
+        .take(limit)
+        .map(|(item, _)| item)
+        .collect())
+}
+
+#[napi]
+pub fn search_indexed_paths(
+    indexed: SearchIndexedInput,
+    query: String,
+    kind: String,
+    limit: Option<i32>,
+) -> Result<Vec<String>> {
+    let query = query.trim().to_string();
+    let limit = limit.unwrap_or(100).max(1) as usize;
+    let mut dirs = indexed.dirs;
+    dirs.sort();
+    let prefer_hidden = query.starts_with('.') || query.contains("/.");
+
+    if query.is_empty() {
+        if kind == "file" {
+            return Ok(indexed.files.into_iter().take(limit).collect());
+        }
+        if kind == "directory" || kind == "all" {
+            return Ok(sort_hidden_last(dirs, prefer_hidden).into_iter().take(limit).collect());
+        }
+        return Ok(Vec::new());
+    }
+
+    let items = if kind == "file" {
+        indexed.files
+    } else if kind == "directory" {
+        dirs.clone()
+    } else {
+        let mut all = indexed.files;
+        all.extend(dirs.clone());
+        all
+    };
+
+    let mut ranked = items
+        .into_iter()
+        .filter_map(|item| score_item(&query, &item).map(|score| (item, score)))
+        .collect::<Vec<_>>();
+
+    ranked.sort_by(|a, b| compare_ranked(a, b));
     if kind == "directory" {
         let search_limit = if prefer_hidden { limit } else { limit * 20 };
         let top = ranked
