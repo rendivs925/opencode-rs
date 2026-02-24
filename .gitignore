@@ -29,3 +29,5 @@ logs/
 *.bun-build
 tsconfig.tsbuildinfo
 docs/
+*.node
+packages/opencode-core/prebuilds/
