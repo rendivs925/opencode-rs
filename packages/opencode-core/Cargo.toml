@@ -36,6 +36,13 @@ thiserror = "1"
 uuid = { version = "1", features = ["v4"] }
 tar = "0.4"
 
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "core"
+harness = false
+
 [profile.release]
 lto = true
 opt-level = 3

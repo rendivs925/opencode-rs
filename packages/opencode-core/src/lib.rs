@@ -3,6 +3,7 @@ extern crate napi_derive;
 
 mod archive;
 mod cache;
+mod error;
 mod glob;
 mod ignore;
 mod token;
@@ -11,6 +12,7 @@ mod watcher;
 
 pub use archive::*;
 pub use cache::*;
+pub use error::*;
 pub use glob::*;
 pub use ignore::*;
 pub use token::*;
