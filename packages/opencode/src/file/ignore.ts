@@ -1,4 +1,4 @@
-import { isIgnored } from "@/core/native"
+import { compilePatterns, isIgnored } from "@/core/native"
 import { sep } from "node:path"
 import { Glob } from "../util/glob"
 
@@ -57,6 +57,9 @@ export namespace FileIgnore {
 
   const FOLDER_PATTERNS = [...FOLDERS].flatMap((item) => [`${item}`, `${item}/**`, `**/${item}`, `**/${item}/**`])
   export const PATTERNS = [...FILES, ...FOLDER_PATTERNS]
+  const COMPILED = compilePatterns(PATTERNS) as {
+    isIgnored(path: string): boolean
+  }
 
   export function match(
     filepath: string,
@@ -71,6 +74,7 @@ export namespace FileIgnore {
 
     const extra = opts?.extra || []
     const normalized = filepath.split(sep).join("/")
+    if (!extra.length) return COMPILED.isIgnored(normalized)
     return isIgnored(normalized, [...PATTERNS, ...extra])
   }
 }

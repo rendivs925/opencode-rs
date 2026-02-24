@@ -21,6 +21,7 @@
   "scripts": {
     "build": "cargo build --release",
     "build:debug": "cargo build",
+    "bench:native": "node script/benchmark.mjs",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
