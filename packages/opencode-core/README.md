@@ -108,6 +108,21 @@ cargo build --release
 npx @napi-rs/cli build
 ```
 
+## Benchmarks
+
+```bash
+# Native core microbench
+npm run bench:native
+
+# JS vs Rust comparison report
+npm run bench:compare
+```
+
+Reports are written to:
+
+- `packages/opencode-core/benchmarks/report.md`
+- `packages/opencode-core/benchmarks/compare-report.md`
+
 ## Performance
 
 | Feature            | Speedup |

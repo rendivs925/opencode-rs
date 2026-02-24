@@ -1,0 +1,49 @@
+name: opencode-core-benchmarks
+
+on:
+  push:
+    branches:
+      - dev
+    paths:
+      - "packages/opencode-core/**"
+      - ".github/workflows/opencode-core-benchmarks.yml"
+  pull_request:
+    paths:
+      - "packages/opencode-core/**"
+      - ".github/workflows/opencode-core-benchmarks.yml"
+  workflow_dispatch:
+
+jobs:
+  benchmarks:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build native module
+        working-directory: packages/opencode-core
+        run: bunx @napi-rs/cli build --release --platform
+
+      - name: Run native benchmark
+        working-directory: packages/opencode-core
+        run: node script/benchmark.mjs
+
+      - name: Run JS vs Rust benchmark
+        working-directory: packages/opencode-core
+        run: node script/benchmark-compare.mjs
+
+      - name: Upload benchmark reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencode-core-benchmarks
+          path: packages/opencode-core/benchmarks
+          if-no-files-found: error

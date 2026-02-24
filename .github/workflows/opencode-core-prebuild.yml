@@ -82,3 +82,10 @@ jobs:
             fi
           done
           echo "All required prebuilds found."
+
+      - name: Upload merged prebuild bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencode-core-prebuilds-all
+          path: prebuilds
+          if-no-files-found: error
