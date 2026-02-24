@@ -55,6 +55,8 @@ module.exports = {
   readDiffSnapshot: native.readDiffSnapshot,
   buildDiffPatch: native.buildDiffPatch,
   resolveGitDir: native.resolveGitDir,
+  gitExec: native.gitExec,
+  gitExecEnv: native.gitExecEnv,
   readAttachment: native.readAttachment,
   readFileWindow: native.readFileWindow,
   readDirWindow: native.readDirWindow,

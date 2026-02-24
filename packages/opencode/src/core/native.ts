@@ -312,6 +312,19 @@ export const buildDiffPatch = core.buildDiffPatch as (
 
 export const resolveGitDir = core.resolveGitDir as (root: string) => string | undefined | null
 
+export const gitExec = core.gitExec as (
+  cwd: string,
+  args: string[],
+) => { exitCode: number; stdout: string; stderr: string }
+
+export const gitExecEnv = core.gitExecEnv as (
+  cwd: string,
+  args: string[],
+  gitDir?: string,
+  gitWorkTree?: string,
+  gitConfigGlobal?: string,
+) => { exitCode: number; stdout: string; stderr: string }
+
 export const readAttachment = core.readAttachment as (path: string) => {
   isAttachment: boolean
   mimeType?: string

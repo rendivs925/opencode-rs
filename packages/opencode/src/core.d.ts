@@ -135,6 +135,14 @@ declare module "@opencode-ai/core" {
     }
   }
   export function resolveGitDir(root: string): string | undefined | null
+  export function gitExec(cwd: string, args: string[]): { exitCode: number; stdout: string; stderr: string }
+  export function gitExecEnv(
+    cwd: string,
+    args: string[],
+    gitDir?: string,
+    gitWorkTree?: string,
+    gitConfigGlobal?: string,
+  ): { exitCode: number; stdout: string; stderr: string }
 
   export type NativeFileEvent = {
     path: string

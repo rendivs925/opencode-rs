@@ -127,6 +127,14 @@ pub struct DiffPatchResult {
     pub patch: DiffPatch,
 }
 
+#[napi(object)]
+#[derive(Clone)]
+pub struct GitExecResult {
+    pub exit_code: i32,
+    pub stdout: String,
+    pub stderr: String,
+}
+
 #[napi]
 pub fn classify_read_target(path: String, hint_path: Option<String>) -> Result<ReadTargetClassification> {
     let path_obj = Path::new(&path);
@@ -427,6 +435,28 @@ pub fn resolve_git_dir(root: String) -> Result<Option<String>> {
 }
 
 #[napi]
+pub fn git_exec(cwd: String, args: Vec<String>) -> Result<GitExecResult> {
+    run_git_exec(&cwd, &args, None, None, None)
+}
+
+#[napi]
+pub fn git_exec_env(
+    cwd: String,
+    args: Vec<String>,
+    git_dir: Option<String>,
+    git_work_tree: Option<String>,
+    git_config_global: Option<String>,
+) -> Result<GitExecResult> {
+    run_git_exec(
+        &cwd,
+        &args,
+        git_dir.as_deref(),
+        git_work_tree.as_deref(),
+        git_config_global.as_deref(),
+    )
+}
+
+#[napi]
 pub fn read_file_window(
     path: String,
     offset: Option<i32>,
@@ -676,6 +706,34 @@ fn run_git_text(root: &str, args: &[&str]) -> Result<String> {
         return Ok(String::new());
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn run_git_exec(
+    cwd: &str,
+    args: &[String],
+    git_dir: Option<&str>,
+    git_work_tree: Option<&str>,
+    git_config_global: Option<&str>,
+) -> Result<GitExecResult> {
+    let mut cmd = Command::new("git");
+    cmd.current_dir(cwd);
+    cmd.args(args);
+    if let Some(item) = git_dir {
+        cmd.env("GIT_DIR", item);
+    }
+    if let Some(item) = git_work_tree {
+        cmd.env("GIT_WORK_TREE", item);
+    }
+    if let Some(item) = git_config_global {
+        cmd.env("GIT_CONFIG_GLOBAL", item);
+    }
+    let output = cmd.output().map_err(|e| napi::Error::from_reason(e.to_string()))?;
+    let code = output.status.code().unwrap_or(1);
+    Ok(GitExecResult {
+        exit_code: code,
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+    })
 }
 
 fn split_lines_preserve_empty(value: &str) -> Vec<String> {
