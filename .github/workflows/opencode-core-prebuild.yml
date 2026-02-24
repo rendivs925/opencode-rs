@@ -21,8 +21,12 @@ jobs:
         settings:
           - host: blacksmith-4vcpu-ubuntu-2404
             name: linux-x64
-          - host: macos-latest
+          - host: blacksmith-8vcpu-ubuntu-2404-arm
+            name: linux-arm64
+          - host: macos-13
             name: darwin-x64
+          - host: macos-14
+            name: darwin-arm64
           - host: blacksmith-4vcpu-windows-2025
             name: win32-x64
     runs-on: ${{ matrix.settings.host }}

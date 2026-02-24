@@ -24,6 +24,7 @@ module.exports = {
   listArchiveContents: native.list_archive_contents,
   readArchiveEntry: native.read_archive_entry,
   extractTarGz: native.extract_tar_gz,
+  extractTarBz2: native.extract_tar_bz2,
   writeGlobCache: native.write_glob_cache,
   readGlobCache: native.read_glob_cache,
   writeTokenCache: native.write_token_cache,

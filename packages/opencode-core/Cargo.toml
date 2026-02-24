@@ -20,6 +20,7 @@ memmap2 = "0.9"
 
 zip = "2"
 flate2 = "1"
+bzip2 = "0.4"
 
 bincode = "1"
 serde = { version = "1", features = ["derive"] }

@@ -37,6 +37,7 @@ declare module "@opencode-ai/core" {
   export function listArchiveContents(archivePath: string): ArchiveEntry[]
   export function readArchiveEntry(archivePath: string, entryName: string): Uint8Array
   export function extractTarGz(archivePath: string, outputDir: string): ArchiveEntry[]
+  export function extractTarBz2(archivePath: string, outputDir: string): ArchiveEntry[]
 
   export function writeGlobCache(cacheDir: string, key: string, value: string[]): void
   export function readGlobCache(cacheDir: string, key: string): string[] | undefined

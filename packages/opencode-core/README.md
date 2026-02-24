@@ -76,6 +76,7 @@ extractArchive(archivePath: string, outputDir: string): ArchiveEntry[]
 listArchiveContents(archivePath: string): ArchiveEntry[]
 readArchiveEntry(archivePath: string, entryName: string): Buffer
 extractTarGz(archivePath: string, outputDir: string): ArchiveEntry[]
+extractTarBz2(archivePath: string, outputDir: string): ArchiveEntry[]
 ```
 
 ### Cache
