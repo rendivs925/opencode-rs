@@ -60,6 +60,14 @@ pub struct FileListSortedResult {
 
 #[napi(object)]
 #[derive(Clone)]
+pub struct ListTreeResult {
+    pub output: String,
+    pub count: i32,
+    pub truncated: bool,
+}
+
+#[napi(object)]
+#[derive(Clone)]
 pub struct IndexedPaths {
     pub files: Vec<String>,
     pub dirs: Vec<String>,
@@ -144,6 +152,106 @@ pub fn list_files_sorted(
         files,
         total,
         has_errors: has_errors.load(AtomicOrdering::Relaxed),
+    })
+}
+
+#[napi]
+pub fn list_tree(
+    search_path: String,
+    globs: Option<Vec<String>>,
+    limit: Option<i32>,
+) -> Result<ListTreeResult> {
+    let root = Path::new(&search_path);
+    let limit = limit.unwrap_or(100).max(1) as usize;
+    let has_errors = AtomicBool::new(false);
+    let files = collect_files(root, globs.as_ref(), true, false, None, &has_errors)?
+        .into_iter()
+        .map(|(p, _)| normalize_relative(root, &p))
+        .take(limit)
+        .collect::<Vec<_>>();
+
+    let mut dirs = BTreeSet::new();
+    let mut files_by_dir = HashMap::<String, Vec<String>>::new();
+
+    for file in files.iter() {
+        let dir = file
+            .rsplit_once('/')
+            .map(|(d, _)| d.to_string())
+            .unwrap_or_else(|| ".".to_string());
+        let parts = if dir == "." {
+            Vec::new()
+        } else {
+            dir.split('/').map(|s| s.to_string()).collect::<Vec<_>>()
+        };
+
+        for i in 0..=parts.len() {
+            let key = if i == 0 {
+                ".".to_string()
+            } else {
+                parts[..i].join("/")
+            };
+            dirs.insert(key);
+        }
+
+        let name = file
+            .rsplit_once('/')
+            .map(|(_, n)| n.to_string())
+            .unwrap_or_else(|| file.to_string());
+        files_by_dir.entry(dir).or_default().push(name);
+    }
+
+    fn render_dir(
+        dir_path: &str,
+        depth: usize,
+        dirs: &BTreeSet<String>,
+        files_by_dir: &HashMap<String, Vec<String>>,
+    ) -> String {
+        let indent = "  ".repeat(depth);
+        let mut out = String::new();
+
+        if depth > 0 {
+            let name = dir_path.rsplit('/').next().unwrap_or(dir_path);
+            out.push_str(&format!("{indent}{name}/\n"));
+        }
+
+        let child_indent = "  ".repeat(depth + 1);
+        let mut children = dirs
+            .iter()
+            .filter(|d| {
+                if d.as_str() == dir_path {
+                    return false;
+                }
+                let parent = d
+                    .rsplit_once('/')
+                    .map(|(p, _)| p.to_string())
+                    .unwrap_or_else(|| ".".to_string());
+                parent == dir_path
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        children.sort();
+
+        for child in children {
+            out.push_str(&render_dir(&child, depth + 1, dirs, files_by_dir));
+        }
+
+        let mut names = files_by_dir
+            .get(dir_path)
+            .cloned()
+            .unwrap_or_default();
+        names.sort();
+        for name in names {
+            out.push_str(&format!("{child_indent}{name}\n"));
+        }
+
+        out
+    }
+
+    let output = format!("{}/\n{}", search_path, render_dir(".", 0, &dirs, &files_by_dir));
+    Ok(ListTreeResult {
+        output,
+        count: files.len() as i32,
+        truncated: files.len() >= limit,
     })
 }
 

@@ -113,6 +113,12 @@ export const listFilesSorted = core.listFilesSorted as (
   limit?: number,
 ) => { files: { path: string; modTime: number }[]; total: number; hasErrors: boolean }
 
+export const listTree = core.listTree as (
+  searchPath: string,
+  globs?: string[],
+  limit?: number,
+) => { output: string; count: number; truncated: boolean }
+
 export const indexPaths = core.indexPaths as (
   searchPath: string,
   includeHidden?: boolean,

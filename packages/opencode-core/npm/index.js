@@ -34,6 +34,7 @@ module.exports = {
   listDirectory: native.listDirectory,
   listFiles: native.listFiles,
   listFilesSorted: native.listFilesSorted,
+  listTree: native.listTree,
   indexPaths: native.indexPaths,
   renderTree: native.renderTree,
   searchPaths: native.searchPaths,
