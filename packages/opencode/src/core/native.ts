@@ -62,6 +62,9 @@ export const FileWatcher = core.FileWatcher as new () => {
 
 export const CompiledIgnore = core.CompiledIgnore as new () => unknown
 
+export const containsPath = core.containsPath as (parent: string, child: string) => boolean
+export const overlapsPath = core.overlapsPath as (a: string, b: string) => boolean
+
 export const searchContent = core.searchContent as (
   pattern: string,
   searchPath: string,

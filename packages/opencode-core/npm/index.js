@@ -29,6 +29,8 @@ module.exports = {
   readTokenCache: native.readTokenCache,
   clearCache: native.clearCache,
   deleteCache: native.deleteCache,
+  containsPath: native.containsPath,
+  overlapsPath: native.overlapsPath,
   listFiles: native.listFiles,
   searchContent: native.searchContent,
   searchContentAdvanced: native.searchContentAdvanced,

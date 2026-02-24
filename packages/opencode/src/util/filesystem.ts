@@ -6,6 +6,7 @@ import { dirname, join, relative } from "path"
 import { Readable } from "stream"
 import { pipeline } from "stream/promises"
 import { Glob } from "./glob"
+import { containsPath, overlapsPath } from "@/core/native"
 
 export namespace Filesystem {
   // Fast sync version for metadata checks
@@ -126,12 +127,14 @@ export namespace Filesystem {
     )
   }
   export function overlaps(a: string, b: string) {
+    if (typeof overlapsPath === "function") return overlapsPath(a, b)
     const relA = relative(a, b)
     const relB = relative(b, a)
     return !relA || !relA.startsWith("..") || !relB || !relB.startsWith("..")
   }
 
   export function contains(parent: string, child: string) {
+    if (typeof containsPath === "function") return containsPath(parent, child)
     return !relative(parent, child).startsWith("..")
   }
 
