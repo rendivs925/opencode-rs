@@ -29,6 +29,7 @@ module.exports = {
   readTokenCache: native.readTokenCache,
   clearCache: native.clearCache,
   deleteCache: native.deleteCache,
+  searchContent: native.searchContent,
   FileWatcher: native.FileWatcher,
   CompiledIgnore: native.CompiledIgnore,
 }

@@ -61,3 +61,15 @@ export const FileWatcher = core.FileWatcher as new () => {
 }
 
 export const CompiledIgnore = core.CompiledIgnore as new () => unknown
+
+export const searchContent = core.searchContent as (
+  pattern: string,
+  searchPath: string,
+  include?: string,
+  maxResults?: number,
+  maxLineLength?: number,
+) => {
+  matches: { path: string; modTime: number; lineNum: number; lineText: string }[]
+  hasErrors: boolean
+  totalMatches: number
+}

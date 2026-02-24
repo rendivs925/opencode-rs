@@ -973,6 +973,7 @@ dependencies = [
  "napi-derive",
  "notify",
  "rayon",
+ "regex",
  "serde",
  "tar",
  "thiserror 1.0.69",

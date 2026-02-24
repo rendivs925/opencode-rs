@@ -37,6 +37,7 @@ anyhow = "1"
 thiserror = "1"
 uuid = { version = "1", features = ["v4"] }
 tar = "0.4"
+regex = "1"
 
 [dev-dependencies]
 criterion = "0.5"
