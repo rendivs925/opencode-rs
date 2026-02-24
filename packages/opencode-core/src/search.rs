@@ -6,6 +6,7 @@ use regex::Regex;
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::time::UNIX_EPOCH;
 
@@ -278,6 +279,37 @@ pub fn index_paths(
         dirs,
         has_errors: has_errors.load(AtomicOrdering::Relaxed),
     })
+}
+
+#[napi]
+pub fn index_paths_cached(
+    search_path: String,
+    include_hidden: Option<bool>,
+    follow_links: Option<bool>,
+    max_depth: Option<i32>,
+    refresh: Option<bool>,
+) -> Result<IndexedPaths> {
+    let key = format!(
+        "{}|{}|{}|{}",
+        search_path,
+        include_hidden.unwrap_or(true),
+        follow_links.unwrap_or(false),
+        max_depth.unwrap_or(-1)
+    );
+    let cache = INDEX_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if !refresh.unwrap_or(false) {
+        if let Ok(guard) = cache.lock() {
+            if let Some(cached) = guard.get(&key) {
+                return Ok(cached.clone());
+            }
+        }
+    }
+
+    let indexed = index_paths(search_path, include_hidden, follow_links, max_depth)?;
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(key, indexed.clone());
+    }
+    Ok(indexed)
 }
 
 #[napi]
@@ -678,3 +710,5 @@ fn is_hidden_text(value: &str) -> bool {
         .split('/')
         .any(|part| part.starts_with('.') && part.len() > 1)
 }
+
+static INDEX_CACHE: OnceLock<Mutex<HashMap<String, IndexedPaths>>> = OnceLock::new();

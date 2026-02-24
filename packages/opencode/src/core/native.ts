@@ -126,6 +126,14 @@ export const indexPaths = core.indexPaths as (
   maxDepth?: number,
 ) => { files: string[]; dirs: string[]; hasErrors: boolean }
 
+export const indexPathsCached = core.indexPathsCached as (
+  searchPath: string,
+  includeHidden?: boolean,
+  followLinks?: boolean,
+  maxDepth?: number,
+  refresh?: boolean,
+) => { files: string[]; dirs: string[]; hasErrors: boolean }
+
 export const renderTree = core.renderTree as (
   searchPath: string,
   limit?: number,

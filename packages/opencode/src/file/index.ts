@@ -9,7 +9,7 @@ import { Filesystem } from "../util/filesystem"
 import { Instance } from "../project/instance"
 import fuzzysort from "fuzzysort"
 import { Global } from "../global"
-import { classifyReadTarget, indexPaths, listDirectory, searchPaths } from "@/core/native"
+import { classifyReadTarget, indexPathsCached, listDirectory, searchPaths } from "@/core/native"
 
 export namespace File {
   const log = Log.create({ service: "file" })
@@ -377,17 +377,9 @@ export namespace File {
         return
       }
 
-      const set = new Set<string>()
-      const indexed = indexPaths(Instance.directory, true, false)
-      for (const file of indexed.files) {
-        result.files.push(file)
-      }
-      for (const dir of indexed.dirs) {
-        const normalized = dir.replace(/\/+$/, "")
-        if (!normalized || set.has(normalized)) continue
-        set.add(normalized)
-        result.dirs.push(normalized + "/")
-      }
+      const indexed = indexPathsCached(Instance.directory, true, false, undefined, false)
+      result.files.push(...indexed.files)
+      result.dirs.push(...indexed.dirs)
       cache = result
       fetching = false
     }
