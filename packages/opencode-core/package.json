@@ -4,9 +4,6 @@
   "description": "High-performance core utilities for OpenCode",
   "main": "npm/index.js",
   "types": "npm/index.d.ts",
-  "dependencies": {
-    "@node-rs/logger": "^1.7.0"
-  },
   "napi": {
     "name": "opencode-core",
     "targets": [
