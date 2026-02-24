@@ -6,6 +6,28 @@ const BINARY_EXTENSIONS: &[&str] = &[
     "xlsx", "ppt", "pptx", "odt", "ods", "odp", "bin", "dat", "obj", "o", "a", "lib", "wasm",
     "pyc", "pyo",
 ];
+const IMAGE_EXTENSIONS: &[&str] = &[
+    "png", "jpg", "jpeg", "gif", "bmp", "webp", "ico", "tif", "tiff", "svg", "svgz", "avif",
+    "apng", "jxl", "heic", "heif", "raw", "cr2", "nef", "arw", "dng", "orf", "raf", "pef",
+    "x3f",
+];
+const TEXT_EXTENSIONS: &[&str] = &[
+    "ts", "tsx", "mts", "cts", "mtsx", "ctsx", "js", "jsx", "mjs", "cjs", "sh", "bash", "zsh",
+    "fish", "ps1", "psm1", "cmd", "bat", "json", "jsonc", "json5", "yaml", "yml", "toml", "md",
+    "mdx", "txt", "xml", "html", "htm", "css", "scss", "sass", "less", "graphql", "gql", "sql",
+    "ini", "cfg", "conf", "env",
+];
+const TEXT_NAMES: &[&str] = &[
+    "dockerfile",
+    "makefile",
+    ".gitignore",
+    ".gitattributes",
+    ".editorconfig",
+    ".npmrc",
+    ".nvmrc",
+    ".prettierrc",
+    ".eslintrc",
+];
 
 #[napi(object)]
 #[derive(Clone)]
@@ -24,6 +46,79 @@ pub struct DirWindow {
     pub total_entries: i32,
     pub truncated: bool,
     pub next_offset: i32,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct ReadTargetClassification {
+    pub mode: String,
+    pub exists: bool,
+    pub mime_type: Option<String>,
+}
+
+#[napi]
+pub fn classify_read_target(path: String, hint_path: Option<String>) -> Result<ReadTargetClassification> {
+    let path_obj = Path::new(&path);
+    let hint = hint_path.unwrap_or(path.clone());
+    let hint_obj = Path::new(&hint);
+    let exists = path_obj.exists();
+
+    if is_image_by_extension(hint_obj) {
+        if !exists {
+            return Ok(ReadTargetClassification {
+                mode: "text".to_string(),
+                exists,
+                mime_type: None,
+            });
+        }
+        return Ok(ReadTargetClassification {
+            mode: "base64".to_string(),
+            exists,
+            mime_type: Some(image_mime_type(hint_obj)),
+        });
+    }
+
+    let text = is_text_by_extension(hint_obj) || is_text_by_name(hint_obj);
+    if is_binary_by_extension(hint_obj) && !text {
+        return Ok(ReadTargetClassification {
+            mode: "binary".to_string(),
+            exists,
+            mime_type: None,
+        });
+    }
+
+    if !exists {
+        return Ok(ReadTargetClassification {
+            mode: "text".to_string(),
+            exists,
+            mime_type: None,
+        });
+    }
+
+    let mime = mime_type(path_obj);
+    let encode = if text { false } else { should_encode(&mime) };
+
+    if encode && !mime.starts_with("image/") {
+        return Ok(ReadTargetClassification {
+            mode: "binary".to_string(),
+            exists,
+            mime_type: Some(mime),
+        });
+    }
+
+    if encode {
+        return Ok(ReadTargetClassification {
+            mode: "base64".to_string(),
+            exists,
+            mime_type: Some(mime),
+        });
+    }
+
+    Ok(ReadTargetClassification {
+        mode: "text".to_string(),
+        exists,
+        mime_type: None,
+    })
 }
 
 #[napi]
@@ -162,4 +257,100 @@ pub fn read_dir_window(path: String, offset: Option<i32>, limit: Option<i32>) ->
         truncated,
         next_offset,
     })
+}
+
+fn ext(path: &Path) -> String {
+    path.extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default()
+}
+
+fn base(path: &Path) -> String {
+    path.file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default()
+}
+
+fn is_binary_by_extension(path: &Path) -> bool {
+    BINARY_EXTENSIONS.contains(&ext(path).as_str())
+}
+
+fn is_image_by_extension(path: &Path) -> bool {
+    IMAGE_EXTENSIONS.contains(&ext(path).as_str())
+}
+
+fn is_text_by_extension(path: &Path) -> bool {
+    TEXT_EXTENSIONS.contains(&ext(path).as_str())
+}
+
+fn is_text_by_name(path: &Path) -> bool {
+    TEXT_NAMES.contains(&base(path).as_str())
+}
+
+fn image_mime_type(path: &Path) -> String {
+    let mime = match ext(path).as_str() {
+        "png" => "image/png",
+        "jpg" => "image/jpeg",
+        "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "bmp" => "image/bmp",
+        "webp" => "image/webp",
+        "ico" => "image/x-icon",
+        "tif" => "image/tiff",
+        "tiff" => "image/tiff",
+        "svg" => "image/svg+xml",
+        "svgz" => "image/svg+xml",
+        "avif" => "image/avif",
+        "apng" => "image/apng",
+        "jxl" => "image/jxl",
+        "heic" => "image/heic",
+        "heif" => "image/heif",
+        _ => "application/octet-stream",
+    };
+    mime.to_string()
+}
+
+fn mime_type(path: &Path) -> String {
+    let mime = match ext(path).as_str() {
+        "json" => "application/json",
+        "pdf" => "application/pdf",
+        "xml" => "application/xml",
+        "html" | "htm" => "text/html",
+        "css" => "text/css",
+        "js" | "mjs" | "cjs" => "text/javascript",
+        "ts" | "tsx" | "jsx" | "md" | "mdx" | "txt" | "yaml" | "yml" | "toml" | "ini" | "cfg"
+        | "conf" | "env" | "sql" | "graphql" | "gql" => "text/plain",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "bmp" => "image/bmp",
+        "webp" => "image/webp",
+        "ico" => "image/x-icon",
+        "tif" | "tiff" => "image/tiff",
+        "svg" | "svgz" => "image/svg+xml",
+        "avif" => "image/avif",
+        "apng" => "image/apng",
+        "jxl" => "image/jxl",
+        "heic" => "image/heic",
+        "heif" => "image/heif",
+        _ => "application/octet-stream",
+    };
+    mime.to_string()
+}
+
+fn should_encode(mime_type: &str) -> bool {
+    let mime = mime_type.to_ascii_lowercase();
+    if mime.is_empty() {
+        return false;
+    }
+    if mime.starts_with("text/") {
+        return false;
+    }
+    if mime.contains("charset=") {
+        return false;
+    }
+    let top = mime.split('/').next().unwrap_or_default();
+    matches!(top, "image" | "audio" | "video" | "font" | "model" | "multipart")
 }

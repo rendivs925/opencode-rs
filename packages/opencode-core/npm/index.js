@@ -38,6 +38,7 @@ module.exports = {
   searchPaths: native.searchPaths,
   searchContent: native.searchContent,
   searchContentAdvanced: native.searchContentAdvanced,
+  classifyReadTarget: native.classifyReadTarget,
   readFileWindow: native.readFileWindow,
   readDirWindow: native.readDirWindow,
   FileWatcher: native.FileWatcher,

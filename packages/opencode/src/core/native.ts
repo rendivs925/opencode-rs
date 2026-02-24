@@ -151,6 +151,15 @@ export const readFileWindow = core.readFileWindow as (
   nextOffset: number
 }
 
+export const classifyReadTarget = core.classifyReadTarget as (
+  path: string,
+  hintPath?: string,
+) => {
+  mode: "text" | "binary" | "base64"
+  exists: boolean
+  mimeType?: string
+}
+
 export const readDirWindow = core.readDirWindow as (
   path: string,
   offset?: number,

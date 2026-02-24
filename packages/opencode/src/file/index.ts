@@ -9,7 +9,7 @@ import { Filesystem } from "../util/filesystem"
 import { Instance } from "../project/instance"
 import fuzzysort from "fuzzysort"
 import { Global } from "../global"
-import { indexPaths, listDirectory, searchPaths } from "@/core/native"
+import { classifyReadTarget, indexPaths, listDirectory, searchPaths } from "@/core/native"
 
 export namespace File {
   const log = Log.create({ service: "file" })
@@ -498,38 +498,22 @@ export namespace File {
       throw new Error(`Access denied: path escapes project directory`)
     }
 
-    // Fast path: check extension before any filesystem operations
-    if (isImageByExtension(file)) {
-      if (await Filesystem.exists(full)) {
-        const buffer = await Filesystem.readBytes(full).catch(() => Buffer.from([]))
-        const content = buffer.toString("base64")
-        const mimeType = getImageMimeType(file)
-        return { type: "text", content, mimeType, encoding: "base64" }
+    const classification = classifyReadTarget(full, file)
+    if (classification.mode === "binary") {
+      if (classification.mimeType) {
+        return { type: "binary", content: "", mimeType: classification.mimeType }
       }
-      return { type: "text", content: "" }
-    }
-
-    const text = isTextByExtension(file) || isTextByName(file)
-
-    if (isBinaryByExtension(file) && !text) {
       return { type: "binary", content: "" }
     }
 
-    if (!(await Filesystem.exists(full))) {
+    if (!classification.exists) {
       return { type: "text", content: "" }
     }
 
-    const mimeType = Filesystem.mimeType(full)
-    const encode = text ? false : await shouldEncode(mimeType)
-
-    if (encode && !isImage(mimeType)) {
-      return { type: "binary", content: "", mimeType }
-    }
-
-    if (encode) {
+    if (classification.mode === "base64") {
       const buffer = await Filesystem.readBytes(full).catch(() => Buffer.from([]))
       const content = buffer.toString("base64")
-      return { type: "text", content, mimeType, encoding: "base64" }
+      return { type: "text", content, mimeType: classification.mimeType, encoding: "base64" }
     }
 
     const content = (await Filesystem.readText(full).catch(() => "")).trim()
