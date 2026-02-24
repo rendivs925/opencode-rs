@@ -74,6 +74,29 @@ export const searchContent = core.searchContent as (
   totalMatches: number
 }
 
+export const listFiles = core.listFiles as (
+  searchPath: string,
+  globs?: string[],
+  includeHidden?: boolean,
+  followLinks?: boolean,
+  maxDepth?: number,
+) => { files: string[]; hasErrors: boolean }
+
+export const searchContentAdvanced = core.searchContentAdvanced as (
+  pattern: string,
+  searchPath: string,
+  globs?: string[],
+  includeHidden?: boolean,
+  followLinks?: boolean,
+  maxDepth?: number,
+  maxResults?: number,
+  maxLineLength?: number,
+) => {
+  matches: { path: string; modTime: number; lineNum: number; lineText: string }[]
+  hasErrors: boolean
+  totalMatches: number
+}
+
 export const readFileWindow = core.readFileWindow as (
   path: string,
   offset?: number,

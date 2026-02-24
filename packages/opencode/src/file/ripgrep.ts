@@ -1,13 +1,8 @@
-// Ripgrep utility functions
-import { listArchiveContents, readArchiveEntry } from "@/core/native"
+// Ripgrep-compatible utility functions backed by Rust core
+import { listFiles, searchContentAdvanced } from "@/core/native"
 import path from "path"
-import { Global } from "../global"
 import fs from "fs/promises"
 import z from "zod"
-import { NamedError } from "@opencode-ai/util/error"
-import { lazy } from "../util/lazy"
-import { $ } from "bun"
-import { Filesystem } from "../util/filesystem"
 import { Log } from "@/util/log"
 
 export namespace Ripgrep {
@@ -88,86 +83,9 @@ export namespace Ripgrep {
   export type Begin = z.infer<typeof Begin>
   export type End = z.infer<typeof End>
   export type Summary = z.infer<typeof Summary>
-  const PLATFORM = {
-    "arm64-darwin": { platform: "aarch64-apple-darwin", extension: "tar.gz" },
-    "arm64-linux": {
-      platform: "aarch64-unknown-linux-gnu",
-      extension: "tar.gz",
-    },
-    "x64-darwin": { platform: "x86_64-apple-darwin", extension: "tar.gz" },
-    "x64-linux": { platform: "x86_64-unknown-linux-musl", extension: "tar.gz" },
-    "x64-win32": { platform: "x86_64-pc-windows-msvc", extension: "zip" },
-  } as const
-
-  export const ExtractionFailedError = NamedError.create(
-    "RipgrepExtractionFailedError",
-    z.object({
-      filepath: z.string(),
-      stderr: z.string(),
-    }),
-  )
-
-  export const UnsupportedPlatformError = NamedError.create(
-    "RipgrepUnsupportedPlatformError",
-    z.object({
-      platform: z.string(),
-    }),
-  )
-
-  export const DownloadFailedError = NamedError.create(
-    "RipgrepDownloadFailedError",
-    z.object({
-      url: z.string(),
-      status: z.number(),
-    }),
-  )
-
-  const state = lazy(async () => {
-    const system = Bun.which("rg")
-    if (system) {
-      const stat = await fs.stat(system).catch(() => undefined)
-      if (stat?.isFile()) return { filepath: system }
-      log.warn("bun.which returned invalid rg path", { filepath: system })
-    }
-    const filepath = path.join(Global.Path.bin, "rg" + (process.platform === "win32" ? ".exe" : ""))
-
-    if (!(await Filesystem.exists(filepath))) {
-      const platformKey = `${process.arch}-${process.platform}` as keyof typeof PLATFORM
-      const config = PLATFORM[platformKey]
-      if (!config) throw new UnsupportedPlatformError({ platform: platformKey })
-
-      const version = "14.1.1"
-      const filename = `ripgrep-${version}-${config.platform}.${config.extension}`
-      const url = `https://github.com/BurntSushi/ripgrep/releases/download/${version}/${filename}`
-
-      const response = await fetch(url)
-      if (!response.ok) throw new DownloadFailedError({ url, status: response.status })
-
-      const arrayBuffer = await response.arrayBuffer()
-      const archivePath = path.join(Global.Path.bin, filename)
-      await Filesystem.write(archivePath, Buffer.from(arrayBuffer))
-      const expected = config.extension === "zip" ? "rg.exe" : "rg"
-      const entry = listArchiveContents(archivePath).find((item: { name: string }) => item.name.endsWith(expected))
-      if (!entry) {
-        throw new ExtractionFailedError({
-          filepath: archivePath,
-          stderr: `${expected} not found in archive`,
-        })
-      }
-      const bytes = readArchiveEntry(archivePath, entry.name)
-      await Filesystem.write(filepath, Buffer.from(bytes))
-      await fs.unlink(archivePath)
-      if (!platformKey.endsWith("-win32")) await fs.chmod(filepath, 0o755)
-    }
-
-    return {
-      filepath,
-    }
-  })
 
   export async function filepath() {
-    const { filepath } = await state()
-    return filepath
+    return "native-rust"
   }
 
   export async function* files(input: {
@@ -180,18 +98,6 @@ export namespace Ripgrep {
   }) {
     input.signal?.throwIfAborted()
 
-    const args = [await filepath(), "--files", "--glob=!.git/*"]
-    if (input.follow) args.push("--follow")
-    if (input.hidden !== false) args.push("--hidden")
-    if (input.maxDepth !== undefined) args.push(`--max-depth=${input.maxDepth}`)
-    if (input.glob) {
-      for (const g of input.glob) {
-        args.push(`--glob=${g}`)
-      }
-    }
-
-    // Bun.spawn should throw this, but it incorrectly reports that the executable does not exist.
-    // See https://github.com/oven-sh/bun/issues/24012
     if (!(await fs.stat(input.cwd).catch(() => undefined))?.isDirectory()) {
       throw Object.assign(new Error(`No such file or directory: '${input.cwd}'`), {
         code: "ENOENT",
@@ -200,39 +106,12 @@ export namespace Ripgrep {
       })
     }
 
-    const proc = Bun.spawn(args, {
-      cwd: input.cwd,
-      stdout: "pipe",
-      stderr: "ignore",
-      maxBuffer: 1024 * 1024 * 20,
-      signal: input.signal,
-    })
+    const globs = ["!.git/*", ...(input.glob ?? [])]
+    const result = listFiles(input.cwd, globs, input.hidden !== false, input.follow, input.maxDepth)
 
-    const reader = proc.stdout.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ""
-
-    try {
-      while (true) {
-        input.signal?.throwIfAborted()
-
-        const { done, value } = await reader.read()
-        if (done) break
-
-        buffer += decoder.decode(value, { stream: true })
-        // Handle both Unix (\n) and Windows (\r\n) line endings
-        const lines = buffer.split(/\r?\n/)
-        buffer = lines.pop() || ""
-
-        for (const line of lines) {
-          if (line) yield line
-        }
-      }
-
-      if (buffer) yield buffer
-    } finally {
-      reader.releaseLock()
-      await proc.exited
+    for (const file of result.files) {
+      input.signal?.throwIfAborted()
+      yield file
     }
 
     input.signal?.throwIfAborted()
@@ -257,7 +136,7 @@ export namespace Ripgrep {
     const root: Node = { name: "", children: new Map() }
     for (const file of files) {
       if (file.includes(".opencode")) continue
-      const parts = file.split(path.sep)
+      const parts = file.split("/")
       if (parts.length < 2) continue
       let node = root
       for (const part of parts.slice(0, -1)) {
@@ -283,11 +162,11 @@ export namespace Ripgrep {
 
     let used = 0
     for (let i = 0; i < queue.length && used < limit; i++) {
-      const { node, path } = queue[i]
-      lines.push(path)
+      const item = queue[i]
+      lines.push(item.path)
       used++
-      for (const child of Array.from(node.children.values()).sort((a, b) => a.name.localeCompare(b.name))) {
-        queue.push({ node: child, path: `${path}/${child.name}` })
+      for (const child of Array.from(item.node.children.values()).sort((a, b) => a.name.localeCompare(b.name))) {
+        queue.push({ node: child, path: `${item.path}/${child.name}` })
       }
     }
 
@@ -303,36 +182,39 @@ export namespace Ripgrep {
     limit?: number
     follow?: boolean
   }) {
-    const args = [`${await filepath()}`, "--json", "--hidden", "--glob='!.git/*'"]
-    if (input.follow) args.push("--follow")
+    const globs = ["!.git/*", ...(input.glob ?? [])]
+    const result = searchContentAdvanced(
+      input.pattern,
+      input.cwd,
+      globs,
+      true,
+      input.follow,
+      undefined,
+      input.limit,
+      undefined,
+    )
 
-    if (input.glob) {
-      for (const g of input.glob) {
-        args.push(`--glob=${g}`)
+    const regex = new RegExp(input.pattern, "g")
+
+    return result.matches.map((item) => {
+      const submatches = Array.from(item.lineText.matchAll(regex)).map((m) => ({
+        match: { text: m[0] ?? "" },
+        start: m.index ?? 0,
+        end: (m.index ?? 0) + (m[0]?.length ?? 0),
+      }))
+
+      const parsed = {
+        type: "match",
+        data: {
+          path: { text: path.join(input.cwd, item.path) },
+          lines: { text: item.lineText },
+          line_number: item.lineNum,
+          absolute_offset: 0,
+          submatches,
+        },
       }
-    }
 
-    if (input.limit) {
-      args.push(`--max-count=${input.limit}`)
-    }
-
-    args.push("--")
-    args.push(input.pattern)
-
-    const command = args.join(" ")
-    const result = await $`${{ raw: command }}`.cwd(input.cwd).quiet().nothrow()
-    if (result.exitCode !== 0) {
-      return []
-    }
-
-    // Handle both Unix (\n) and Windows (\r\n) line endings
-    const lines = result.text().trim().split(/\r?\n/).filter(Boolean)
-    // Parse JSON lines from ripgrep output
-
-    return lines
-      .map((line) => JSON.parse(line))
-      .map((parsed) => Result.parse(parsed))
-      .filter((r) => r.type === "match")
-      .map((r) => r.data)
+      return Result.parse(parsed).data
+    })
   }
 }
