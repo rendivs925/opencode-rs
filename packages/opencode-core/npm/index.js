@@ -1,8 +1,8 @@
 let native
-const req = eval("require")
 try {
-  native = req("../prebuilds/" + process.platform + "-" + process.arch + "/opencode-core.node")
+  native = require("../prebuilds/" + process.platform + "-" + process.arch + "/opencode-core.node")
 } catch (e) {
+  const req = eval("require")
   native = req("@opencode-ai/core-" + process.platform + "-" + process.arch)
 }
 
