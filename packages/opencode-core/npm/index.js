@@ -30,6 +30,8 @@ module.exports = {
   clearCache: native.clearCache,
   deleteCache: native.deleteCache,
   searchContent: native.searchContent,
+  readFileWindow: native.readFileWindow,
+  readDirWindow: native.readDirWindow,
   FileWatcher: native.FileWatcher,
   CompiledIgnore: native.CompiledIgnore,
 }

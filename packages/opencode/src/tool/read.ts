@@ -1,8 +1,6 @@
 import z from "zod"
-import { createReadStream } from "fs"
 import * as fs from "fs/promises"
 import * as path from "path"
-import { createInterface } from "readline"
 import { Tool } from "./tool"
 import { LSP } from "../lsp"
 import { FileTime } from "../file/time"
@@ -11,10 +9,10 @@ import { Instance } from "../project/instance"
 import { assertExternalDirectory } from "./external-directory"
 import { InstructionPrompt } from "../session/instruction"
 import { Filesystem } from "../util/filesystem"
+import { readDirWindow, readFileWindow } from "@/core/native"
 
 const DEFAULT_READ_LIMIT = 2000
 const MAX_LINE_LENGTH = 2000
-const MAX_LINE_SUFFIX = `... (line truncated to ${MAX_LINE_LENGTH} chars)`
 const MAX_BYTES = 50 * 1024
 const MAX_BYTES_LABEL = `${MAX_BYTES / 1024} KB`
 
@@ -74,24 +72,11 @@ export const ReadTool = Tool.define("read", {
     }
 
     if (stat.isDirectory()) {
-      const dirents = await fs.readdir(filepath, { withFileTypes: true })
-      const entries = await Promise.all(
-        dirents.map(async (dirent) => {
-          if (dirent.isDirectory()) return dirent.name + "/"
-          if (dirent.isSymbolicLink()) {
-            const target = await fs.stat(path.join(filepath, dirent.name)).catch(() => undefined)
-            if (target?.isDirectory()) return dirent.name + "/"
-          }
-          return dirent.name
-        }),
-      )
-      entries.sort((a, b) => a.localeCompare(b))
-
       const limit = params.limit ?? DEFAULT_READ_LIMIT
       const offset = params.offset ?? 1
-      const start = offset - 1
-      const sliced = entries.slice(start, start + limit)
-      const truncated = start + sliced.length < entries.length
+      const window = readDirWindow(filepath, offset, limit)
+      const sliced = window.entries
+      const truncated = window.truncated
 
       const output = [
         `<path>${filepath}</path>`,
@@ -99,8 +84,8 @@ export const ReadTool = Tool.define("read", {
         `<entries>`,
         sliced.join("\n"),
         truncated
-          ? `\n(Showing ${sliced.length} of ${entries.length} entries. Use 'offset' parameter to read beyond entry ${offset + sliced.length})`
-          : `\n(${entries.length} entries)`,
+          ? `\n(Showing ${sliced.length} of ${window.totalEntries} entries. Use 'offset' parameter to read beyond entry ${window.nextOffset})`
+          : `\n(${window.totalEntries} entries)`,
         `</entries>`,
       ].join("\n")
 
@@ -141,71 +126,26 @@ export const ReadTool = Tool.define("read", {
       }
     }
 
-    const isBinary = await isBinaryFile(filepath, Number(stat.size))
-    if (isBinary) throw new Error(`Cannot read binary file: ${filepath}`)
-
-    const stream = createReadStream(filepath, { encoding: "utf8" })
-    const rl = createInterface({
-      input: stream,
-      // Note: we use the crlfDelay option to recognize all instances of CR LF
-      // ('\r\n') in file as a single line break.
-      crlfDelay: Infinity,
-    })
-
     const limit = params.limit ?? DEFAULT_READ_LIMIT
     const offset = params.offset ?? 1
-    const start = offset - 1
-    const raw: string[] = []
-    let bytes = 0
-    let lines = 0
-    let truncatedByBytes = false
-    let hasMoreLines = false
-    try {
-      for await (const text of rl) {
-        lines += 1
-        if (lines <= start) continue
+    const window = readFileWindow(filepath, offset, limit, MAX_BYTES, MAX_LINE_LENGTH)
 
-        if (raw.length >= limit) {
-          hasMoreLines = true
-          continue
-        }
-
-        const line = text.length > MAX_LINE_LENGTH ? text.substring(0, MAX_LINE_LENGTH) + MAX_LINE_SUFFIX : text
-        const size = Buffer.byteLength(line, "utf-8") + (raw.length > 0 ? 1 : 0)
-        if (bytes + size > MAX_BYTES) {
-          truncatedByBytes = true
-          hasMoreLines = true
-          break
-        }
-
-        raw.push(line)
-        bytes += size
-      }
-    } finally {
-      rl.close()
-      stream.destroy()
-    }
-
-    if (lines < offset && !(lines === 0 && offset === 1)) {
-      throw new Error(`Offset ${offset} is out of range for this file (${lines} lines)`)
-    }
-
-    const content = raw.map((line, index) => {
+    const content = window.lines.map((line, index) => {
       return `${index + offset}: ${line}`
     })
-    const preview = raw.slice(0, 20).join("\n")
+    const preview = window.lines.slice(0, 20).join("\n")
 
     let output = [`<path>${filepath}</path>`, `<type>file</type>`, "<content>"].join("\n")
     output += content.join("\n")
 
-    const totalLines = lines
-    const lastReadLine = offset + raw.length - 1
-    const nextOffset = lastReadLine + 1
-    const truncated = hasMoreLines || truncatedByBytes
+    const totalLines = window.totalLines
+    const lastReadLine = offset + window.lines.length - 1
+    const nextOffset = window.nextOffset
+    const truncated = window.truncated
 
-    if (truncatedByBytes) {
+    if (window.truncatedByBytes) {
       output += `\n\n(Output capped at ${MAX_BYTES_LABEL}. Showing lines ${offset}-${lastReadLine}. Use offset=${nextOffset} to continue.)`
-    } else if (hasMoreLines) {
+    } else if (window.truncated) {
       output += `\n\n(Showing lines ${offset}-${lastReadLine} of ${totalLines}. Use offset=${nextOffset} to continue.)`
     } else {
       output += `\n\n(End of file - total ${totalLines} lines)`
@@ -231,63 +171,3 @@ export const ReadTool = Tool.define("read", {
     }
   },
 })
-
-async function isBinaryFile(filepath: string, fileSize: number): Promise<boolean> {
-  const ext = path.extname(filepath).toLowerCase()
-  // binary check for common non-text extensions
-  switch (ext) {
-    case ".zip":
-    case ".tar":
-    case ".gz":
-    case ".exe":
-    case ".dll":
-    case ".so":
-    case ".class":
-    case ".jar":
-    case ".war":
-    case ".7z":
-    case ".doc":
-    case ".docx":
-    case ".xls":
-    case ".xlsx":
-    case ".ppt":
-    case ".pptx":
-    case ".odt":
-    case ".ods":
-    case ".odp":
-    case ".bin":
-    case ".dat":
-    case ".obj":
-    case ".o":
-    case ".a":
-    case ".lib":
-    case ".wasm":
-    case ".pyc":
-    case ".pyo":
-      return true
-    default:
-      break
-  }
-
-  if (fileSize === 0) return false
-
-  const fh = await fs.open(filepath, "r")
-  try {
-    const sampleSize = Math.min(4096, fileSize)
-    const bytes = Buffer.alloc(sampleSize)
-    const result = await fh.read(bytes, 0, sampleSize, 0)
-    if (result.bytesRead === 0) return false
-
-    let nonPrintableCount = 0
-    for (let i = 0; i < result.bytesRead; i++) {
-      if (bytes[i] === 0) return true
-      if (bytes[i] < 9 || (bytes[i] > 13 && bytes[i] < 32)) {
-        nonPrintableCount++
-      }
-    }
-    // If >30% non-printable characters, consider it binary
-    return nonPrintableCount / result.bytesRead > 0.3
-  } finally {
-    await fh.close()
-  }
-}

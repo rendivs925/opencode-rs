@@ -73,3 +73,28 @@ export const searchContent = core.searchContent as (
   hasErrors: boolean
   totalMatches: number
 }
+
+export const readFileWindow = core.readFileWindow as (
+  path: string,
+  offset?: number,
+  limit?: number,
+  maxBytes?: number,
+  maxLineLength?: number,
+) => {
+  lines: string[]
+  totalLines: number
+  truncated: boolean
+  truncatedByBytes: boolean
+  nextOffset: number
+}
+
+export const readDirWindow = core.readDirWindow as (
+  path: string,
+  offset?: number,
+  limit?: number,
+) => {
+  entries: string[]
+  totalEntries: number
+  truncated: boolean
+  nextOffset: number
+}
