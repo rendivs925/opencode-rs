@@ -1,4 +1,5 @@
 use napi::Result;
+use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -15,9 +16,15 @@ struct Chunk {
     timestamp_ms: i64,
 }
 
+enum ProcessHandle {
+    Pipe(Child),
+    Pty(Box<dyn portable_pty::Child + Send>),
+}
+
 struct Session {
-    child: Child,
+    process: ProcessHandle,
     stdin_pipe: Option<ChildStdin>,
+    pty_writer: Option<Box<dyn Write + Send>>,
     rx: mpsc::Receiver<Chunk>,
     complete_sent: bool,
     started: Instant,
@@ -78,7 +85,6 @@ pub struct StreamReadResult {
 }
 
 static SESSIONS: OnceLock<Mutex<HashMap<String, Session>>> = OnceLock::new();
-static PTY_READY: OnceLock<bool> = OnceLock::new();
 
 fn sessions() -> &'static Mutex<HashMap<String, Session>> {
     SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -126,49 +132,24 @@ pub fn stream_start(config: StreamStartConfig) -> Result<StreamSession> {
     let chunk_size = config.chunk_size.unwrap_or(64 * 1024) as usize;
     let (tx, rx) = mpsc::channel::<Chunk>();
     let use_pty = config.use_pty.unwrap_or(false);
-    let mut child = if use_pty && pty_ready() {
-        let mut wrapped = Command::new("script");
-        wrapped
-            .arg("-q")
-            .arg("/dev/null")
-            .arg("-c")
-            .arg(build_shell_command(&config.command, &config.args));
-        wrapped
-            .current_dir(&config.cwd)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .stdin(stdin_from_mode(config.stdin_mode.as_deref()));
-        for (k, v) in &config.env {
-            wrapped.env(k, v);
-        }
-        match wrapped.spawn() {
-            Ok(child) => child,
-            Err(_) => spawn_direct(&config)?,
+    let (pid, process, stdin_pipe, pty_writer, sequence) = if use_pty {
+        match spawn_pty(&config, tx.clone(), chunk_size) {
+            Ok(item) => item,
+            Err(_) => spawn_direct(&config, tx, chunk_size)?,
         }
     } else {
-        spawn_direct(&config)?
+        spawn_direct(&config, tx, chunk_size)?
     };
-    let pid = child.id();
-    let stdin_pipe = child.stdin.take();
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| napi::Error::from_reason("missing stdout".to_string()))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| napi::Error::from_reason("missing stderr".to_string()))?;
-    spawn_reader(stdout, tx.clone(), "stdout", chunk_size, 0);
-    spawn_reader(stderr, tx, "stderr", chunk_size, 1);
     let session = Session {
-        child,
+        process,
         stdin_pipe,
+        pty_writer,
         rx,
         complete_sent: false,
         started: Instant::now(),
         timeout_ms: config.timeout_ms,
         reason: None,
-        sequence: 2,
+        sequence,
     };
 
     let id = Uuid::new_v4().to_string();
@@ -198,7 +179,7 @@ pub fn stream_read(id: String, max_chunks: Option<u32>, wait_ms: Option<u32>) ->
         if let Some(limit) = session.timeout_ms {
             if session.started.elapsed() >= Duration::from_millis(limit as u64) {
                 session.reason = Some("timeout".to_string());
-                let _ = session.child.kill();
+                let _ = kill_process(&mut session.process);
             }
         }
     }
@@ -240,7 +221,7 @@ pub fn stream_read(id: String, max_chunks: Option<u32>, wait_ms: Option<u32>) ->
     }
 
     if !session.complete_sent {
-        if let Some(exit) = try_wait_process(&mut session.child)? {
+        if let Some(exit) = try_wait_process(&mut session.process)? {
             session.complete_sent = true;
             let reason = session.reason.clone().unwrap_or_else(|| "exit".to_string());
             let sequence = session.sequence;
@@ -276,6 +257,20 @@ pub fn stream_write(id: String, data: String, close: Option<bool>) -> Result<boo
     let Some(session) = store.get_mut(&id) else {
         return Ok(false);
     };
+    if let Some(writer) = session.pty_writer.as_mut() {
+        if !data.is_empty() {
+            writer
+                .write_all(data.as_bytes())
+                .map_err(|err| napi::Error::from_reason(err.to_string()))?;
+            writer
+                .flush()
+                .map_err(|err| napi::Error::from_reason(err.to_string()))?;
+        }
+        if close.unwrap_or(false) {
+            session.pty_writer = None;
+        }
+        return Ok(true);
+    }
     if let Some(stdin) = session.stdin_pipe.as_mut() {
         if !data.is_empty() {
             stdin
@@ -304,7 +299,7 @@ pub fn stream_kill(id: String) -> Result<bool> {
     if session.reason.is_none() {
         session.reason = Some("killed".to_string());
     }
-    let _ = session.child.kill();
+    let _ = kill_process(&mut session.process);
     Ok(true)
 }
 
@@ -354,12 +349,6 @@ pub fn stream_command(config: StreamConfig) -> Result<StreamChunk> {
     })
 }
 
-fn build_shell_command(command: &str, args: &[String]) -> String {
-    let mut out = vec![shell_escape(command)];
-    out.extend(args.iter().map(|item| shell_escape(item)));
-    out.join(" ")
-}
-
 fn stdin_from_mode(mode: Option<&str>) -> Stdio {
     match mode {
         Some("piped") => Stdio::piped(),
@@ -367,22 +356,11 @@ fn stdin_from_mode(mode: Option<&str>) -> Stdio {
     }
 }
 
-fn pty_ready() -> bool {
-    *PTY_READY.get_or_init(|| {
-        let status = Command::new("script")
-            .arg("-q")
-            .arg("/dev/null")
-            .arg("-c")
-            .arg("true")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-        status.map(|item| item.success()).unwrap_or(false)
-    })
-}
-
-fn spawn_direct(config: &StreamStartConfig) -> Result<Child> {
+fn spawn_direct(
+    config: &StreamStartConfig,
+    tx: mpsc::Sender<Chunk>,
+    chunk_size: usize,
+) -> Result<(u32, ProcessHandle, Option<ChildStdin>, Option<Box<dyn Write + Send>>, u64)> {
     let mut cmd = Command::new(&config.command);
     cmd.args(&config.args)
         .current_dir(&config.cwd)
@@ -392,20 +370,84 @@ fn spawn_direct(config: &StreamStartConfig) -> Result<Child> {
     for (k, v) in &config.env {
         cmd.env(k, v);
     }
-    cmd.spawn()
+    let mut child = cmd
+        .spawn()
         .map_err(|err| napi::Error::from_reason(err.to_string()))
+        ?;
+    let pid = child.id();
+    let stdin_pipe = child.stdin.take();
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| napi::Error::from_reason("missing stdout".to_string()))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| napi::Error::from_reason("missing stderr".to_string()))?;
+    spawn_reader(stdout, tx.clone(), "stdout", chunk_size, 0);
+    spawn_reader(stderr, tx, "stderr", chunk_size, 1);
+    Ok((pid, ProcessHandle::Pipe(child), stdin_pipe, None, 2))
 }
 
-fn shell_escape(value: &str) -> String {
-    if value.is_empty() {
-        return "''".to_string();
+fn spawn_pty(
+    config: &StreamStartConfig,
+    tx: mpsc::Sender<Chunk>,
+    chunk_size: usize,
+) -> Result<(u32, ProcessHandle, Option<ChildStdin>, Option<Box<dyn Write + Send>>, u64)> {
+    let system = native_pty_system();
+    let pair = system
+        .openpty(PtySize {
+            rows: 30,
+            cols: 120,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|err| napi::Error::from_reason(err.to_string()))?;
+    let mut cmd = CommandBuilder::new(&config.command);
+    cmd.cwd(&config.cwd);
+    for arg in &config.args {
+        cmd.arg(arg);
     }
-    format!("'{}'", value.replace('\'', "'\"'\"'"))
+    for (k, v) in &config.env {
+        cmd.env(k, v);
+    }
+    let child = pair
+        .slave
+        .spawn_command(cmd)
+        .map_err(|err| napi::Error::from_reason(err.to_string()))?;
+    let pid = child.process_id().unwrap_or(0);
+    let reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|err| napi::Error::from_reason(err.to_string()))?;
+    let writer = pair
+        .master
+        .take_writer()
+        .map_err(|err| napi::Error::from_reason(err.to_string()))?;
+    spawn_reader(reader, tx, "stdout", chunk_size, 0);
+    Ok((pid, ProcessHandle::Pty(child), None, Some(writer), 1))
 }
 
-fn try_wait_process(child: &mut Child) -> Result<Option<i32>> {
-    child
-        .try_wait()
-        .map_err(|err| napi::Error::from_reason(err.to_string()))
-        .map(|item| item.map(|status| status.code().unwrap_or(0)))
+fn kill_process(process: &mut ProcessHandle) -> Result<()> {
+    match process {
+        ProcessHandle::Pipe(child) => child
+            .kill()
+            .map_err(|err| napi::Error::from_reason(err.to_string())),
+        ProcessHandle::Pty(child) => child
+            .kill()
+            .map_err(|err| napi::Error::from_reason(err.to_string())),
+    }
+}
+
+fn try_wait_process(process: &mut ProcessHandle) -> Result<Option<i32>> {
+    match process {
+        ProcessHandle::Pipe(child) => child
+            .try_wait()
+            .map_err(|err| napi::Error::from_reason(err.to_string()))
+            .map(|item| item.map(|status| status.code().unwrap_or(0))),
+        ProcessHandle::Pty(child) => child
+            .try_wait()
+            .map_err(|err| napi::Error::from_reason(err.to_string()))
+            .map(|item| item.map(|status| status.exit_code() as i32)),
+    }
 }

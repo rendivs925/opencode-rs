@@ -13,6 +13,9 @@ pub fn count_lines_fast(text: String) -> u32 {
     let count = if cfg!(target_arch = "x86_64") && is_avx2_available() {
         // SAFETY: gated by runtime AVX2 feature detection and x86_64 target.
         unsafe { count_byte_avx2(bytes, b'\n') }
+    } else if cfg!(target_arch = "aarch64") && is_neon_available() {
+        // SAFETY: gated by runtime NEON feature detection and aarch64 target.
+        unsafe { count_byte_neon(bytes, b'\n') }
     } else {
         memchr::memchr_iter(b'\n', bytes).count()
     };
@@ -26,6 +29,10 @@ pub fn find_whitespace_indices(text: String) -> Vec<u32> {
         if cfg!(target_arch = "x86_64") && is_avx2_available() {
             // SAFETY: gated by runtime AVX2 feature detection and x86_64 target.
             return unsafe { find_ascii_whitespace_indices_avx2(bytes) };
+        }
+        if cfg!(target_arch = "aarch64") && is_neon_available() {
+            // SAFETY: gated by runtime NEON feature detection and aarch64 target.
+            return unsafe { find_ascii_whitespace_indices_neon(bytes) };
         }
         return find_ascii_whitespace_indices_scalar(bytes);
     }
@@ -46,6 +53,9 @@ pub fn is_binary_file(path: String) -> Result<bool> {
     let has_null = if cfg!(target_arch = "x86_64") && is_avx2_available() {
         // SAFETY: gated by runtime AVX2 feature detection and x86_64 target.
         unsafe { has_zero_byte_avx2(sample) }
+    } else if cfg!(target_arch = "aarch64") && is_neon_available() {
+        // SAFETY: gated by runtime NEON feature detection and aarch64 target.
+        unsafe { has_zero_byte_neon(sample) }
     } else {
         memchr::memchr(0, sample).is_some()
     };
@@ -81,6 +91,18 @@ fn is_avx2_available() -> bool {
     }
 }
 
+#[inline]
+fn is_neon_available() -> bool {
+    #[cfg(target_arch = "aarch64")]
+    {
+        std::arch::is_aarch64_feature_detected!("neon")
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        false
+    }
+}
+
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn count_byte_avx2(bytes: &[u8], needle: u8) -> usize {
@@ -106,6 +128,32 @@ unsafe fn count_byte_avx2(bytes: &[u8], needle: u8) -> usize {
     memchr::memchr_iter(needle, bytes).count()
 }
 
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn count_byte_neon(bytes: &[u8], needle: u8) -> usize {
+    use std::arch::aarch64::*;
+
+    let mut count = 0usize;
+    let mut i = 0usize;
+    let step = 16usize;
+    let lane = vdupq_n_u8(needle);
+    while i + step <= bytes.len() {
+        let ptr = bytes.as_ptr().add(i);
+        let chunk = vld1q_u8(ptr);
+        let eq = vceqq_u8(chunk, lane);
+        let mut tmp = [0u8; 16];
+        vst1q_u8(tmp.as_mut_ptr(), eq);
+        count += tmp.iter().filter(|item| **item == 0xff).count();
+        i += step;
+    }
+    count + memchr::memchr_iter(needle, &bytes[i..]).count()
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+unsafe fn count_byte_neon(bytes: &[u8], needle: u8) -> usize {
+    memchr::memchr_iter(needle, bytes).count()
+}
+
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn has_zero_byte_avx2(bytes: &[u8]) -> bool {
@@ -128,6 +176,33 @@ unsafe fn has_zero_byte_avx2(bytes: &[u8]) -> bool {
 
 #[cfg(not(target_arch = "x86_64"))]
 unsafe fn has_zero_byte_avx2(bytes: &[u8]) -> bool {
+    memchr::memchr(0, bytes).is_some()
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn has_zero_byte_neon(bytes: &[u8]) -> bool {
+    use std::arch::aarch64::*;
+
+    let mut i = 0usize;
+    let step = 16usize;
+    let zero = vdupq_n_u8(0);
+    while i + step <= bytes.len() {
+        let ptr = bytes.as_ptr().add(i);
+        let chunk = vld1q_u8(ptr);
+        let eq = vceqq_u8(chunk, zero);
+        let mut tmp = [0u8; 16];
+        vst1q_u8(tmp.as_mut_ptr(), eq);
+        if tmp.iter().any(|item| *item == 0xff) {
+            return true;
+        }
+        i += step;
+    }
+    memchr::memchr(0, &bytes[i..]).is_some()
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+unsafe fn has_zero_byte_neon(bytes: &[u8]) -> bool {
     memchr::memchr(0, bytes).is_some()
 }
 
@@ -175,6 +250,55 @@ unsafe fn find_ascii_whitespace_indices_avx2(bytes: &[u8]) -> Vec<u32> {
 
 #[cfg(not(target_arch = "x86_64"))]
 unsafe fn find_ascii_whitespace_indices_avx2(bytes: &[u8]) -> Vec<u32> {
+    find_ascii_whitespace_indices_scalar(bytes)
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn find_ascii_whitespace_indices_neon(bytes: &[u8]) -> Vec<u32> {
+    use std::arch::aarch64::*;
+
+    let mut out = Vec::<u32>::new();
+    let mut i = 0usize;
+    let step = 16usize;
+    let s = vdupq_n_u8(b' ');
+    let n = vdupq_n_u8(b'\n');
+    let r = vdupq_n_u8(b'\r');
+    let t = vdupq_n_u8(b'\t');
+    let v = vdupq_n_u8(0x0b);
+    let f = vdupq_n_u8(0x0c);
+    while i + step <= bytes.len() {
+        let ptr = bytes.as_ptr().add(i);
+        let chunk = vld1q_u8(ptr);
+        let e0 = vceqq_u8(chunk, s);
+        let e1 = vceqq_u8(chunk, n);
+        let e2 = vceqq_u8(chunk, r);
+        let e3 = vceqq_u8(chunk, t);
+        let e4 = vceqq_u8(chunk, v);
+        let e5 = vceqq_u8(chunk, f);
+        let mut ws = vorrq_u8(e0, e1);
+        ws = vorrq_u8(ws, e2);
+        ws = vorrq_u8(ws, e3);
+        ws = vorrq_u8(ws, e4);
+        ws = vorrq_u8(ws, e5);
+        let mut tmp = [0u8; 16];
+        vst1q_u8(tmp.as_mut_ptr(), ws);
+        tmp.iter()
+            .enumerate()
+            .filter_map(|(idx, item)| (*item == 0xff).then_some((i + idx) as u32))
+            .for_each(|idx| out.push(idx));
+        i += step;
+    }
+    bytes[i..]
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, byte)| is_ascii_whitespace(*byte).then_some((i + idx) as u32))
+        .for_each(|idx| out.push(idx));
+    out
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+unsafe fn find_ascii_whitespace_indices_neon(bytes: &[u8]) -> Vec<u32> {
     find_ascii_whitespace_indices_scalar(bytes)
 }
 
