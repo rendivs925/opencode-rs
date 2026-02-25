@@ -3,6 +3,7 @@ import * as path from "path"
 import * as fs from "fs/promises"
 import { readFileSync } from "fs"
 import { Log } from "../util/log"
+import { applyPatch as applyUnifiedPatch, createTwoFilesPatch } from "../core/native"
 
 export namespace Patch {
   const log = Log.create({ service: "patch" })
@@ -309,33 +310,58 @@ export namespace Patch {
   }
 
   export function deriveNewContentsFromChunks(filePath: string, chunks: UpdateFileChunk[]): ApplyPatchFileUpdate {
-    // Read original file content
     let originalContent: string
     try {
       originalContent = readFileSync(filePath, "utf-8")
     } catch (error) {
       throw new Error(`Failed to read file ${filePath}: ${error}`)
     }
+    let content = originalContent
+    let lineIndex = 0
 
-    let originalLines = originalContent.split("\n")
+    for (const chunk of chunks) {
+      const lines = splitContent(content)
 
-    // Drop trailing empty element for consistent line counting
-    if (originalLines.length > 0 && originalLines[originalLines.length - 1] === "") {
-      originalLines.pop()
+      if (chunk.change_context) {
+        const contextIdx = seekSequence(lines, [chunk.change_context], lineIndex)
+        if (contextIdx === -1) {
+          throw new Error(`Failed to find context '${chunk.change_context}' in ${filePath}`)
+        }
+        lineIndex = contextIdx + 1
+      }
+
+      let pattern = chunk.old_lines
+      let replacement = chunk.new_lines
+
+      if (pattern.length === 0) {
+        const insertionIdx = lines.length
+        const patch = buildUnifiedPatch(filePath, insertionIdx, pattern, replacement)
+        content = applyUnifiedPatch(content, patch)
+        lineIndex = insertionIdx + replacement.length
+        continue
+      }
+
+      let found = seekSequence(lines, pattern, lineIndex, chunk.is_end_of_file)
+      if (found === -1 && pattern[pattern.length - 1] === "") {
+        pattern = pattern.slice(0, -1)
+        if (replacement.length > 0 && replacement[replacement.length - 1] === "") {
+          replacement = replacement.slice(0, -1)
+        }
+        found = seekSequence(lines, pattern, lineIndex, chunk.is_end_of_file)
+      }
+
+      if (found === -1) {
+        throw new Error(`Failed to find expected lines in ${filePath}:\n${chunk.old_lines.join("\n")}`)
+      }
+
+      const matched = lines.slice(found, found + pattern.length)
+      const patch = buildUnifiedPatch(filePath, found, matched, replacement)
+      content = applyUnifiedPatch(content, patch)
+      lineIndex = found + replacement.length
     }
 
-    const replacements = computeReplacements(originalLines, filePath, chunks)
-    let newLines = applyReplacements(originalLines, replacements)
-
-    // Ensure trailing newline
-    if (newLines.length === 0 || newLines[newLines.length - 1] !== "") {
-      newLines.push("")
-    }
-
-    const newContent = newLines.join("\n")
-
-    // Generate unified diff
-    const unifiedDiff = generateUnifiedDiff(originalContent, newContent)
+    const newContent = content.length === 0 || content.endsWith("\n") ? content : `${content}\n`
+    const unifiedDiff = createTwoFilesPatch(filePath, filePath, originalContent, newContent)
 
     return {
       unified_diff: unifiedDiff,
@@ -343,79 +369,21 @@ export namespace Patch {
     }
   }
 
-  function computeReplacements(
-    originalLines: string[],
-    filePath: string,
-    chunks: UpdateFileChunk[],
-  ): Array<[number, number, string[]]> {
-    const replacements: Array<[number, number, string[]]> = []
-    let lineIndex = 0
-
-    for (const chunk of chunks) {
-      // Handle context-based seeking
-      if (chunk.change_context) {
-        const contextIdx = seekSequence(originalLines, [chunk.change_context], lineIndex)
-        if (contextIdx === -1) {
-          throw new Error(`Failed to find context '${chunk.change_context}' in ${filePath}`)
-        }
-        lineIndex = contextIdx + 1
-      }
-
-      // Handle pure addition (no old lines)
-      if (chunk.old_lines.length === 0) {
-        const insertionIdx =
-          originalLines.length > 0 && originalLines[originalLines.length - 1] === ""
-            ? originalLines.length - 1
-            : originalLines.length
-        replacements.push([insertionIdx, 0, chunk.new_lines])
-        continue
-      }
-
-      // Try to match old lines in the file
-      let pattern = chunk.old_lines
-      let newSlice = chunk.new_lines
-      let found = seekSequence(originalLines, pattern, lineIndex, chunk.is_end_of_file)
-
-      // Retry without trailing empty line if not found
-      if (found === -1 && pattern.length > 0 && pattern[pattern.length - 1] === "") {
-        pattern = pattern.slice(0, -1)
-        if (newSlice.length > 0 && newSlice[newSlice.length - 1] === "") {
-          newSlice = newSlice.slice(0, -1)
-        }
-        found = seekSequence(originalLines, pattern, lineIndex, chunk.is_end_of_file)
-      }
-
-      if (found !== -1) {
-        replacements.push([found, pattern.length, newSlice])
-        lineIndex = found + pattern.length
-      } else {
-        throw new Error(`Failed to find expected lines in ${filePath}:\n${chunk.old_lines.join("\n")}`)
-      }
+  function splitContent(content: string) {
+    const lines = content.split("\n")
+    if (lines.length > 0 && lines[lines.length - 1] === "") {
+      lines.pop()
     }
-
-    // Sort replacements by index to apply in order
-    replacements.sort((a, b) => a[0] - b[0])
-
-    return replacements
+    return lines
   }
 
-  function applyReplacements(lines: string[], replacements: Array<[number, number, string[]]>): string[] {
-    // Apply replacements in reverse order to avoid index shifting
-    const result = [...lines]
-
-    for (let i = replacements.length - 1; i >= 0; i--) {
-      const [startIdx, oldLen, newSegment] = replacements[i]
-
-      // Remove old lines
-      result.splice(startIdx, oldLen)
-
-      // Insert new lines
-      for (let j = 0; j < newSegment.length; j++) {
-        result.splice(startIdx + j, 0, newSegment[j])
-      }
-    }
-
-    return result
+  function buildUnifiedPatch(filePath: string, lineStart: number, oldLines: string[], newLines: string[]) {
+    const hunk = [
+      `@@ -${lineStart + 1},${oldLines.length} +${lineStart + 1},${newLines.length} @@`,
+      ...oldLines.map((line) => `-${line}`),
+      ...newLines.map((line) => `+${line}`),
+    ]
+    return [`--- ${filePath}`, `+++ ${filePath}`, ...hunk].join("\n")
   }
 
   // Normalize Unicode punctuation to ASCII equivalents (like Rust's normalize_unicode)
@@ -485,33 +453,6 @@ export namespace Patch {
       eof,
     )
     return normalized
-  }
-
-  function generateUnifiedDiff(oldContent: string, newContent: string): string {
-    const oldLines = oldContent.split("\n")
-    const newLines = newContent.split("\n")
-
-    // Simple diff generation - in a real implementation you'd use a proper diff algorithm
-    let diff = "@@ -1 +1 @@\n"
-
-    // Find changes (simplified approach)
-    const maxLen = Math.max(oldLines.length, newLines.length)
-    let hasChanges = false
-
-    for (let i = 0; i < maxLen; i++) {
-      const oldLine = oldLines[i] || ""
-      const newLine = newLines[i] || ""
-
-      if (oldLine !== newLine) {
-        if (oldLine) diff += `-${oldLine}\n`
-        if (newLine) diff += `+${newLine}\n`
-        hasChanges = true
-      } else if (oldLine) {
-        diff += ` ${oldLine}\n`
-      }
-    }
-
-    return hasChanges ? diff : ""
   }
 
   // Apply hunks to filesystem

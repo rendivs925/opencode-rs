@@ -56,6 +56,8 @@ export const ApplyPatchTool = Tool.define("apply_patch", {
     }> = []
 
     let totalDiff = ""
+    const withIndex = (filePath: string, diff: string) =>
+      `Index: ${path.relative(Instance.worktree, filePath).replaceAll("\\", "/")}\n${diff}`
 
     for (const hunk of hunks) {
       const filePath = path.resolve(Instance.directory, hunk.path)
@@ -85,7 +87,7 @@ export const ApplyPatchTool = Tool.define("apply_patch", {
             deletions,
           })
 
-          totalDiff += diff + "\n"
+          totalDiff += withIndex(filePath, diff) + "\n"
           break
         }
 
@@ -130,7 +132,7 @@ export const ApplyPatchTool = Tool.define("apply_patch", {
             deletions,
           })
 
-          totalDiff += diff + "\n"
+          totalDiff += withIndex(movePath ?? filePath, diff) + "\n"
           break
         }
 
@@ -152,7 +154,7 @@ export const ApplyPatchTool = Tool.define("apply_patch", {
             deletions,
           })
 
-          totalDiff += deleteDiff + "\n"
+          totalDiff += withIndex(filePath, deleteDiff) + "\n"
           break
         }
       }
