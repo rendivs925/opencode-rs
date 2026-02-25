@@ -4,12 +4,9 @@ import path from "path"
 import DESCRIPTION from "./bash.txt"
 import { Log } from "../util/log"
 import { Instance } from "../project/instance"
-import { lazy } from "@/util/lazy"
-import { Language } from "web-tree-sitter"
 
 import { $ } from "bun"
 import { Filesystem } from "@/util/filesystem"
-import { fileURLToPath } from "url"
 import { Flag } from "@/flag/flag.ts"
 import { Shell } from "@/shell/shell"
 
@@ -23,33 +20,108 @@ const DEFAULT_TIMEOUT = Flag.OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS || 2 
 
 export const log = Log.create({ service: "bash-tool" })
 
-const resolveWasm = (asset: string) => {
-  if (asset.startsWith("file://")) return fileURLToPath(asset)
-  if (asset.startsWith("/") || /^[a-z]:/i.test(asset)) return asset
-  const url = new URL(asset, import.meta.url)
-  return fileURLToPath(url)
+function splitCommands(command: string) {
+  const segments: string[] = []
+  let start = 0
+  let i = 0
+  let single = false
+  let double = false
+  let back = false
+  while (i < command.length) {
+    const c = command[i]
+    const n = i + 1 < command.length ? command[i + 1] : ""
+    if (!single && !double && c === "\\") {
+      i += 2
+      continue
+    }
+    if (!double && !back && c === "'") {
+      single = !single
+      i++
+      continue
+    }
+    if (!single && !back && c === '"') {
+      double = !double
+      i++
+      continue
+    }
+    if (!single && !double && c === "`") {
+      back = !back
+      i++
+      continue
+    }
+    if (!single && !double && !back) {
+      const isPair = (c === "&" && n === "&") || (c === "|" && n === "|")
+      const isSingle = c === ";" || c === "\n" || c === "|"
+      if (isPair || isSingle) {
+        const raw = command.slice(start, i).trim()
+        if (raw) segments.push(raw)
+        i += isPair ? 2 : 1
+        start = i
+        continue
+      }
+    }
+    i++
+  }
+  const tail = command.slice(start).trim()
+  if (tail) segments.push(tail)
+  return segments
 }
 
-const parser = lazy(async () => {
-  const { Parser } = await import("web-tree-sitter")
-  const { default: treeWasm } = await import("web-tree-sitter/tree-sitter.wasm" as string, {
-    with: { type: "wasm" },
+function splitWords(command: string) {
+  const words: string[] = []
+  let out = ""
+  let i = 0
+  let single = false
+  let double = false
+  while (i < command.length) {
+    const c = command[i]
+    if (!single && c === "\\") {
+      if (i + 1 < command.length) {
+        out += command[i + 1]
+        i += 2
+        continue
+      }
+      i++
+      continue
+    }
+    if (!double && c === "'") {
+      single = !single
+      i++
+      continue
+    }
+    if (!single && c === '"') {
+      double = !double
+      i++
+      continue
+    }
+    if (!single && !double && /\s/.test(c)) {
+      if (out) {
+        words.push(out)
+        out = ""
+      }
+      i++
+      continue
+    }
+    out += c
+    i++
+  }
+  if (out) words.push(out)
+  return words
+}
+
+function parseCommands(input: string) {
+  return splitCommands(input).map((text) => {
+    const tokens = splitWords(text)
+    let start = 0
+    while (start < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=.*/.test(tokens[start])) {
+      start++
+    }
+    return {
+      text,
+      command: tokens.slice(start),
+    }
   })
-  const treePath = resolveWasm(treeWasm)
-  await Parser.init({
-    locateFile() {
-      return treePath
-    },
-  })
-  const { default: bashWasm } = await import("tree-sitter-bash/tree-sitter-bash.wasm" as string, {
-    with: { type: "wasm" },
-  })
-  const bashPath = resolveWasm(bashWasm)
-  const bashLanguage = await Language.load(bashPath)
-  const p = new Parser()
-  p.setLanguage(bashLanguage)
-  return p
-})
+}
 
 function shellArgs(shell: string, command: string) {
   if (process.platform !== "win32") return { command: shell, args: ["-lc", command] }
@@ -90,41 +162,30 @@ export const BashTool = Tool.define("bash", async () => {
         throw new Error(`Invalid timeout value: ${params.timeout}. Timeout must be a positive number.`)
       }
       const timeout = params.timeout ?? DEFAULT_TIMEOUT
-      const tree = await parser().then((p) => p.parse(params.command))
-      if (!tree) {
-        throw new Error("Failed to parse command")
-      }
       const directories = new Set<string>()
       if (!Instance.containsPath(cwd)) directories.add(cwd)
       const patterns = new Set<string>()
       const always = new Set<string>()
 
-      for (const node of tree.rootNode.descendantsOfType("command")) {
-        if (!node) continue
-
-        // Get full command text including redirects if present
-        let commandText = node.parent?.type === "redirected_statement" ? node.parent.text : node.text
-
-        const command = []
-        for (let i = 0; i < node.childCount; i++) {
-          const child = node.child(i)
-          if (!child) continue
-          if (
-            child.type !== "command_name" &&
-            child.type !== "word" &&
-            child.type !== "string" &&
-            child.type !== "raw_string" &&
-            child.type !== "concatenation"
-          ) {
-            continue
-          }
-          command.push(child.text)
-        }
+      for (const cmd of parseCommands(params.command)) {
+        const commandText = cmd.text
+        const command = cmd.command
 
         // not an exhaustive list, but covers most common cases
-        if (["cd", "rm", "cp", "mv", "mkdir", "touch", "chmod", "chown", "cat"].includes(command[0])) {
+        if (command.length && ["cd", "rm", "cp", "mv", "mkdir", "touch", "chmod", "chown", "cat"].includes(command[0])) {
           for (const arg of command.slice(1)) {
-            if (arg.startsWith("-") || (command[0] === "chmod" && arg.startsWith("+"))) continue
+            if (
+              arg.startsWith("-") ||
+              arg === ">" ||
+              arg === ">>" ||
+              arg === "<" ||
+              arg === "2>" ||
+              arg === "1>" ||
+              arg === "2>>" ||
+              (command[0] === "chmod" && arg.startsWith("+"))
+            ) {
+              continue
+            }
             const resolved = await $`realpath ${arg}`
               .cwd(cwd)
               .quiet()
