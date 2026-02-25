@@ -3,6 +3,8 @@ use crate::create_two_files_patch;
 use napi::Result;
 use regex::Regex;
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::process::Command;
 use std::sync::OnceLock;
@@ -184,6 +186,14 @@ pub fn classify_read_target(path: String, hint_path: Option<String>) -> Result<R
     if !exists {
         return Ok(ReadTargetClassification {
             mode: "text".to_string(),
+            exists,
+            mime_type: None,
+        });
+    }
+
+    if !text && sample_has_null(path_obj, 4096)? {
+        return Ok(ReadTargetClassification {
+            mode: "binary".to_string(),
             exists,
             mime_type: None,
         });
@@ -626,24 +636,10 @@ pub fn read_file_window(
         )));
     }
 
-    let bytes = std::fs::read(path).map_err(|e| napi::Error::from_reason(e.to_string()))?;
-    let sample_len = bytes.len().min(4096);
-    if bytes[..sample_len].contains(&0) {
+    if sample_has_null(path, 4096)? {
         return Err(napi::Error::from_reason(format!(
             "Cannot read binary file: {}",
             path.display()
-        )));
-    }
-
-    let text = String::from_utf8_lossy(&bytes);
-    let all: Vec<&str> = text.lines().collect();
-    let total_lines = all.len() as i32;
-    let start = (offset - 1) as usize;
-
-    if all.len() < offset as usize && !(all.is_empty() && offset == 1) {
-        return Err(napi::Error::from_reason(format!(
-            "Offset {} is out of range for this file ({} lines)",
-            offset, total_lines
         )));
     }
 
@@ -651,13 +647,30 @@ pub fn read_file_window(
     let mut bytes_used = 0usize;
     let mut truncated_by_bytes = false;
     let mut has_more_lines = false;
+    let mut total_lines = 0i32;
+    let mut buf = Vec::<u8>::new();
+    let mut reader = BufReader::new(
+        File::open(path).map_err(|e| napi::Error::from_reason(e.to_string()))?,
+    );
 
-    for line in all.iter().skip(start) {
-        if lines.len() >= limit {
-            has_more_lines = true;
+    loop {
+        buf.clear();
+        let read = reader
+            .read_until(b'\n', &mut buf)
+            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        if read == 0 {
             break;
         }
-        let mut value = (*line).to_string();
+        total_lines += 1;
+        if total_lines < offset {
+            continue;
+        }
+        if lines.len() >= limit {
+            has_more_lines = true;
+            continue;
+        }
+        let mut value = String::from_utf8_lossy(&buf).to_string();
+        trim_line_endings(&mut value);
         if value.chars().count() > max_line_length {
             value = value.chars().take(max_line_length).collect::<String>()
                 + &format!("... (line truncated to {} chars)", max_line_length);
@@ -666,10 +679,17 @@ pub fn read_file_window(
         if bytes_used + size > max_bytes {
             truncated_by_bytes = true;
             has_more_lines = true;
-            break;
+            continue;
         }
         bytes_used += size;
         lines.push(value);
+    }
+
+    if total_lines < offset && !(total_lines == 0 && offset == 1) {
+        return Err(napi::Error::from_reason(format!(
+            "Offset {} is out of range for this file ({} lines)",
+            offset, total_lines
+        )));
     }
 
     let next_offset = offset + lines.len() as i32;
@@ -783,6 +803,24 @@ fn image_mime_type(path: &Path) -> String {
         _ => "application/octet-stream",
     };
     mime.to_string()
+}
+
+fn sample_has_null(path: &Path, sample_len: usize) -> Result<bool> {
+    let mut file = File::open(path).map_err(|e| napi::Error::from_reason(e.to_string()))?;
+    let mut sample = vec![0u8; sample_len];
+    let read = file
+        .read(&mut sample)
+        .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+    Ok(sample[..read].contains(&0))
+}
+
+fn trim_line_endings(value: &mut String) {
+    if value.ends_with('\n') {
+        value.pop();
+    }
+    if value.ends_with('\r') {
+        value.pop();
+    }
 }
 
 fn mime_type(path: &Path) -> String {

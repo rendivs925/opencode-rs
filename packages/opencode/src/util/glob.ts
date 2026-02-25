@@ -11,7 +11,6 @@ import {
   readGlobCache,
   writeGlobCache,
 } from "@/core/native"
-import fs from "fs"
 import path from "path"
 import os from "os"
 import { xdgCache } from "xdg-basedir"
@@ -30,19 +29,24 @@ export namespace Glob {
 
   function key(pattern: string, options: Options) {
     const cwd = path.resolve(options.cwd ?? ".")
-    const stat = fs.statSync(cwd)
     return fastHash(
       [
-      cwd,
-      pattern,
-      options.absolute ? "abs" : "rel",
-      options.include ?? "file",
-      options.dot ? "dot" : "nodot",
-      options.symlink ? "follow" : "nofollow",
-      stat.size,
-      stat.mtimeMs,
+        cwd,
+        pattern,
+        options.absolute ? "abs" : "rel",
+        options.include ?? "file",
+        options.dot ? "dot" : "nodot",
+        options.symlink ? "follow" : "nofollow",
       ].join("|"),
     )
+  }
+
+  function parallel(pattern: string, options: Options) {
+    if (options.include === "all") return true
+    if ((options.absolute ?? false) && pattern.includes("**")) return true
+    if (pattern.includes("**")) return true
+    if (pattern.includes("/")) return true
+    return false
   }
 
   function maybeTrimCoreCache() {
@@ -52,6 +56,7 @@ export namespace Glob {
 
   export async function scan(pattern: string, options: Options = {}): Promise<string[]> {
     const includeAll = options.include === "all"
+    const useParallel = parallel(pattern, options)
     if (options.cache !== false) {
       const k = key(pattern, options)
       const cached = readGlobCache(DIR, k)
@@ -64,7 +69,7 @@ export namespace Glob {
         options.symlink ?? false,
         includeAll,
         options.absolute ?? false,
-        false,
+        useParallel,
       )
       deleteCache(DIR, k)
       writeGlobCache(DIR, k, results)
@@ -79,7 +84,7 @@ export namespace Glob {
       options.symlink ?? false,
       includeAll,
       options.absolute ?? false,
-      false,
+      useParallel,
     )
   }
 
