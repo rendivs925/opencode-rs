@@ -165,6 +165,17 @@ export function Session() {
   const lastAssistant = createMemo(() => {
     return messages().findLast((x) => x.role === "assistant")
   })
+  const messageWithVisibleText = createMemo(() => {
+    const ids = new Set<string>()
+    for (const message of messages()) {
+      const parts = sync.data.part[message.id]
+      if (!parts || !Array.isArray(parts)) continue
+      if (parts.some((part) => part && part.type === "text" && !part.synthetic && !part.ignored)) {
+        ids.add(message.id)
+      }
+    }
+    return ids
+  })
 
   const dimensions = useTerminalDimensions()
   const [sidebar, setSidebar] = kv.signal<"auto" | "hide">("sidebar", "auto")
@@ -282,21 +293,13 @@ export function Session() {
   // Helper: Find next visible message boundary in direction
   const findNextVisibleMessage = (direction: "next" | "prev"): string | null => {
     const children = scroll.getChildren()
-    const messagesList = messages()
     const scrollTop = scroll.y
 
     // Get visible messages sorted by position, filtering for valid non-synthetic, non-ignored content
     const visibleMessages = children
       .filter((c) => {
         if (!c.id) return false
-        const message = messagesList.find((m) => m.id === c.id)
-        if (!message) return false
-
-        // Check if message has valid non-synthetic, non-ignored text parts
-        const parts = sync.data.part[message.id]
-        if (!parts || !Array.isArray(parts)) return false
-
-        return parts.some((part) => part && part.type === "text" && !part.synthetic && !part.ignored)
+        return messageWithVisibleText().has(c.id)
       })
       .sort((a, b) => a.y - b.y)
 

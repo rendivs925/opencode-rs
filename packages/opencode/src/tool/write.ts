@@ -51,7 +51,7 @@ export const WriteTool = Tool.define("write", {
 
     let output = "Wrote file successfully."
     await LSP.touchFile(filepath, false)
-    const diagnostics = await LSP.diagnostics()
+    const diagnostics = await LSP.diagnosticsFor([filepath])
     const normalizedFilepath = Filesystem.normalizePath(filepath)
     const errors = (diagnostics[normalizedFilepath] ?? []).filter((item) => item.severity === 1)
     if (errors.length > 0) {

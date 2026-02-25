@@ -8,11 +8,38 @@ import { Config } from "../config/config"
 import { Instance } from "../project/instance"
 import { Scheduler } from "../scheduler"
 import { gitExec, gitExecEnv, snapshotDiffFull } from "@/core/native"
+import { Bus } from "@/bus"
+import { File } from "@/file"
+import { FileWatcher } from "@/file/watcher"
 
 export namespace Snapshot {
   const log = Log.create({ service: "snapshot" })
   const hour = 60 * 60 * 1000
   const prune = "7.days"
+  const tracker = Instance.state(
+    () => {
+      const result = {
+        dirty: true,
+        unsubs: [] as (() => void)[],
+      }
+      result.unsubs.push(
+        Bus.subscribe(File.Event.Edited, () => {
+          result.dirty = true
+        }),
+      )
+      result.unsubs.push(
+        Bus.subscribe(FileWatcher.Event.Updated, () => {
+          result.dirty = true
+        }),
+      )
+      return result
+    },
+    async (entry) => {
+      for (const unsub of entry.unsubs) {
+        unsub()
+      }
+    },
+  )
 
   export function init() {
     Scheduler.register({
@@ -56,6 +83,7 @@ export namespace Snapshot {
       runGit(["init"], { gitDir: git, workTree: Instance.worktree, cwd: Instance.directory })
       // Configure git to not convert line endings on Windows
       runGit(["config", "core.autocrlf", "false"], { gitDir: git, workTree: Instance.worktree, cwd: Instance.directory })
+      tracker().dirty = true
       log.info("initialized")
     }
     await add(git)
@@ -113,6 +141,7 @@ export namespace Snapshot {
         stdout: result.stdout,
       })
     }
+    tracker().dirty = true
   }
 
   export async function revert(patches: Patch[]) {
@@ -146,6 +175,7 @@ export namespace Snapshot {
         files.add(file)
       }
     }
+    tracker().dirty = true
   }
 
   export async function diff(hash: string) {
@@ -193,8 +223,18 @@ export namespace Snapshot {
   }
 
   async function add(git: string) {
+    const state = tracker()
+    if (!state.dirty) {
+      const pending = runGit(["status", "--porcelain=v1", "--untracked-files=all", "--", "."], {
+        gitDir: git,
+        workTree: Instance.worktree,
+        cwd: Instance.directory,
+      })
+      if (pending.exitCode === 0 && pending.stdout.trim().length === 0) return
+    }
     await syncExclude(git)
-    runGit(["add", "."], { gitDir: git, workTree: Instance.worktree, cwd: Instance.directory })
+    runGit(["add", "-A", "--", "."], { gitDir: git, workTree: Instance.worktree, cwd: Instance.directory })
+    state.dirty = false
   }
 
   async function syncExclude(git: string) {

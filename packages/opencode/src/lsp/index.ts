@@ -10,6 +10,7 @@ import { Config } from "../config/config"
 import { spawn } from "child_process"
 import { Instance } from "../project/instance"
 import { Flag } from "@/flag/flag"
+import { Filesystem } from "@/util/filesystem"
 
 export namespace LSP {
   const log = Log.create({ service: "lsp" })
@@ -295,6 +296,27 @@ export namespace LSP {
         const arr = results[path] || []
         arr.push(...diagnostics)
         results[path] = arr
+      }
+    }
+    return results
+  }
+
+  export async function diagnosticsFor(input: string[]) {
+    if (input.length === 0) return {}
+    const targets = new Set(
+      input.map((item) => {
+        const absolute = path.isAbsolute(item) ? item : path.resolve(Instance.directory, item)
+        return Filesystem.normalizePath(absolute)
+      }),
+    )
+    const results: Record<string, LSPClient.Diagnostic[]> = {}
+    for (const map of await runAll(async (client) => client.diagnostics)) {
+      for (const filepath of targets) {
+        const diagnostics = map.get(filepath)
+        if (!diagnostics || diagnostics.length === 0) continue
+        const arr = results[filepath] || []
+        arr.push(...diagnostics)
+        results[filepath] = arr
       }
     }
     return results

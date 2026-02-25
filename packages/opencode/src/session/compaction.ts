@@ -59,32 +59,32 @@ export namespace SessionCompaction {
     const config = await Config.get()
     if (config.compaction?.prune === false) return
     log.info("pruning")
-    const msgs = await Session.messages({ sessionID: input.sessionID })
     let total = 0
     let pruned = 0
-    const toPrune = []
+    const toPrune = [] as MessageV2.ToolPart[]
     let turns = 0
+    let done = false
 
-    loop: for (let msgIndex = msgs.length - 1; msgIndex >= 0; msgIndex--) {
-      const msg = msgs[msgIndex]
+    for await (const msg of MessageV2.stream(input.sessionID)) {
       if (msg.info.role === "user") turns++
       if (turns < 2) continue
-      if (msg.info.role === "assistant" && msg.info.summary) break loop
+      if (msg.info.role === "assistant" && msg.info.summary) break
       for (let partIndex = msg.parts.length - 1; partIndex >= 0; partIndex--) {
         const part = msg.parts[partIndex]
-        if (part.type === "tool")
-          if (part.state.status === "completed") {
-            if (PRUNE_PROTECTED_TOOLS.includes(part.tool)) continue
-
-            if (part.state.time.compacted) break loop
-            const estimate = Token.estimate(part.state.output)
-            total += estimate
-            if (total > PRUNE_PROTECT) {
-              pruned += estimate
-              toPrune.push(part)
-            }
-          }
+        if (part.type !== "tool" || part.state.status !== "completed") continue
+        if (PRUNE_PROTECTED_TOOLS.includes(part.tool)) continue
+        if (part.state.time.compacted) {
+          done = true
+          break
+        }
+        const estimate = Token.estimate(part.state.output)
+        total += estimate
+        if (total > PRUNE_PROTECT) {
+          pruned += estimate
+          toPrune.push(part)
+        }
       }
+      if (done) break
     }
     log.info("found", { pruned, total })
     if (pruned > PRUNE_MINIMUM) {

@@ -83,12 +83,16 @@ export const EditTool = Tool.define("edit", {
       } catch (error) {
         const matches = findReplacements(contentOld, params.oldString, "context_aware")
         if (!matches.length) throw error
-        const nearest = matches
-          .map((item) => ({
-            text: item.text,
-            distance: levenshteinDistance(item.text, params.oldString),
-          }))
-          .sort((a, b) => a.distance - b.distance)[0]
+        let nearest: { text: string; distance: number } | undefined
+        for (const item of matches) {
+          const distance = levenshteinDistance(item.text, params.oldString)
+          if (!nearest || distance < nearest.distance) {
+            nearest = {
+              text: item.text,
+              distance,
+            }
+          }
+        }
         if (!nearest) throw error
         throw new Error(`${error instanceof Error ? error.message : String(error)}\nClosest match distance: ${nearest.distance}`)
       }
@@ -139,7 +143,7 @@ export const EditTool = Tool.define("edit", {
 
     let output = "Edit applied successfully."
     await LSP.touchFile(filePath, false)
-    const diagnostics = await LSP.diagnostics()
+    const diagnostics = await LSP.diagnosticsFor([filePath])
     const normalizedFilePath = Filesystem.normalizePath(filePath)
     const issues = diagnostics[normalizedFilePath] ?? []
     const errors = issues.filter((item) => item.severity === 1)

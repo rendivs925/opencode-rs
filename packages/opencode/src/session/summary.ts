@@ -72,16 +72,15 @@ export namespace SessionSummary {
       messageID: z.string(),
     }),
     async (input) => {
-      const all = await Session.messages({ sessionID: input.sessionID })
       await Promise.all([
-        summarizeSession({ sessionID: input.sessionID, messages: all }),
-        summarizeMessage({ messageID: input.messageID, messages: all }),
+        summarizeSession({ sessionID: input.sessionID }),
+        summarizeMessage({ sessionID: input.sessionID, messageID: input.messageID }),
       ])
     },
   )
 
-  async function summarizeSession(input: { sessionID: string; messages: MessageV2.WithParts[] }) {
-    const diffs = await computeDiff({ messages: input.messages })
+  async function summarizeSession(input: { sessionID: string }) {
+    const diffs = await computeDiffFromRecent(MessageV2.stream(input.sessionID))
     await Session.setSummary({
       sessionID: input.sessionID,
       summary: {
@@ -97,13 +96,20 @@ export namespace SessionSummary {
     })
   }
 
-  async function summarizeMessage(input: { messageID: string; messages: MessageV2.WithParts[] }) {
-    const messages = input.messages.filter(
-      (m) => m.info.id === input.messageID || (m.info.role === "assistant" && m.info.parentID === input.messageID),
-    )
-    const msgWithParts = messages.find((m) => m.info.id === input.messageID)!
+  async function summarizeMessage(input: { sessionID: string; messageID: string }) {
+    const matches = [] as MessageV2.WithParts[]
+    for await (const msg of MessageV2.stream(input.sessionID)) {
+      if (msg.info.id === input.messageID || (msg.info.role === "assistant" && msg.info.parentID === input.messageID)) {
+        matches.push(msg)
+      }
+      if (msg.info.id < input.messageID) break
+    }
+    if (matches.length === 0) return
+    matches.reverse()
+    const msgWithParts = matches.find((m) => m.info.id === input.messageID)
+    if (!msgWithParts) return
     const userMsg = msgWithParts.info as MessageV2.User
-    const diffs = await computeDiff({ messages })
+    const diffs = await computeDiff({ messages: matches })
     userMsg.summary = {
       ...userMsg.summary,
       diffs,
@@ -155,6 +161,28 @@ export namespace SessionSummary {
       }
     }
 
+    if (from && to) return Snapshot.diffFull(from, to)
+    return []
+  }
+
+  async function computeDiffFromRecent(input: AsyncIterable<MessageV2.WithParts>) {
+    let from: string | undefined
+    let to: string | undefined
+    for await (const item of input) {
+      if (!to) {
+        for (const part of item.parts) {
+          if (part.type === "step-finish" && part.snapshot) {
+            to = part.snapshot
+            break
+          }
+        }
+      }
+      for (const part of item.parts) {
+        if (part.type === "step-start" && part.snapshot) {
+          from = part.snapshot
+        }
+      }
+    }
     if (from && to) return Snapshot.diffFull(from, to)
     return []
   }
