@@ -39,10 +39,10 @@ import { Installation } from "@/installation"
 import { MessageV2 } from "@/session/message-v2"
 import { Config } from "@/config/config"
 import { Todo } from "@/session/todo"
+import { applyPatch } from "@/core/native"
 import { z } from "zod"
 import { LoadAPIKeyError } from "ai"
 import type { AssistantMessage, Event, OpencodeClient, SessionMessageResponse } from "@opencode-ai/sdk/v2"
-import { applyPatch } from "diff"
 
 type ModeOption = { id: string; name: string; description?: string }
 type ModelOption = { modelId: string; name: string }
@@ -1587,12 +1587,12 @@ export namespace ACP {
   }
 
   function getNewContent(fileOriginal: string, unifiedDiff: string): string | undefined {
-    const result = applyPatch(fileOriginal, unifiedDiff)
-    if (result === false) {
+    try {
+      return applyPatch(fileOriginal, unifiedDiff)
+    } catch {
       log.error("Failed to apply unified diff (context mismatch)")
       return undefined
     }
-    return result
   }
 
   function sortProvidersByName<T extends { name: string }>(providers: T[]): T[] {

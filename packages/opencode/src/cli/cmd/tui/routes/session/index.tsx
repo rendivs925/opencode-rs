@@ -50,7 +50,6 @@ import { useSDK } from "@tui/context/sdk"
 import { useCommandDialog } from "@tui/component/dialog-command"
 import { useKeybind } from "@tui/context/keybind"
 import { Header } from "./header"
-import { parsePatch } from "diff"
 import { useDialog } from "../../ui/dialog"
 import { TodoItem } from "../../component/todo-item"
 import { DialogMessage } from "./dialog-message"
@@ -80,6 +79,32 @@ import { formatTranscript } from "../../util/transcript"
 import { UI } from "@/cli/ui.ts"
 
 addDefaultParsers(parsers.parsers)
+
+function parseUnifiedDiffStats(diffText: string): { filename: string; additions: number; deletions: number }[] {
+  const files: { filename: string; additions: number; deletions: number }[] = []
+  let file: { filename: string; additions: number; deletions: number } | undefined
+  for (const line of diffText.split("\n")) {
+    if (line.startsWith("+++ ")) {
+      if (file) files.push(file)
+      const value = line.slice(4).trim()
+      const filename = value.replace(/^[ab]\//, "")
+      file = { filename, additions: 0, deletions: 0 }
+      continue
+    }
+    if (!file) continue
+    if (line.startsWith("@@ ")) continue
+    if (line.startsWith("+++ ") || line.startsWith("--- ")) continue
+    if (line.startsWith("+")) {
+      file.additions++
+      continue
+    }
+    if (line.startsWith("-")) {
+      file.deletions++
+    }
+  }
+  if (file) files.push(file)
+  return files
+}
 
 class CustomSpeedScroll implements ScrollAcceleration {
   constructor(private speed: number) {}
@@ -927,27 +952,7 @@ export function Session() {
   const revertDiffFiles = createMemo(() => {
     const diffText = revertInfo()?.diff ?? ""
     if (!diffText) return []
-
-    try {
-      const patches = parsePatch(diffText)
-      return patches.map((patch) => {
-        const filename = patch.newFileName || patch.oldFileName || "unknown"
-        const cleanFilename = filename.replace(/^[ab]\//, "")
-        return {
-          filename: cleanFilename,
-          additions: patch.hunks.reduce(
-            (sum, hunk) => sum + hunk.lines.filter((line) => line.startsWith("+")).length,
-            0,
-          ),
-          deletions: patch.hunks.reduce(
-            (sum, hunk) => sum + hunk.lines.filter((line) => line.startsWith("-")).length,
-            0,
-          ),
-        }
-      })
-    } catch (error) {
-      return []
-    }
+    return parseUnifiedDiffStats(diffText)
   })
 
   const revertRevertedMessages = createMemo(() => {
