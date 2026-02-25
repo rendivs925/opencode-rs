@@ -39,6 +39,7 @@ uuid = { version = "1", features = ["v4"] }
 tar = "0.4"
 regex = "1"
 base64 = "0.21"
+memchr = "2"
 
 [dev-dependencies]
 criterion = "0.5"
