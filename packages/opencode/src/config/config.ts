@@ -1201,6 +1201,33 @@ export namespace Config {
             .positive()
             .optional()
             .describe("Timeout in milliseconds for model context protocol (MCP) requests"),
+          ttc: z
+            .object({
+              enabled: z.boolean().optional().describe("Enable test-time compute candidate selection"),
+              local_only: z
+                .boolean()
+                .optional()
+                .describe("Apply TTC only for local models/providers (default: true)"),
+              strategy: z
+                .enum(["knockout"])
+                .optional()
+                .describe("TTC selection strategy. 'knockout' runs pairwise elimination"),
+              samples: z
+                .number()
+                .int()
+                .min(2)
+                .max(9)
+                .optional()
+                .describe("Number of candidate drafts to generate for TTC"),
+              comparisons: z
+                .number()
+                .int()
+                .min(1)
+                .max(7)
+                .optional()
+                .describe("Number of judge votes per TTC pairwise match"),
+            })
+            .optional(),
         })
         .optional(),
     })

@@ -26,6 +26,14 @@ import { Auth } from "@/auth"
 export namespace LLM {
   const log = Log.create({ service: "llm" })
   export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
+  const TTC_MAX_DRAFT_CHARS = 8000
+  const TTC_MAX_TASK_CHARS = 4000
+  const TTC_JUDGE_SYSTEM = [
+    "You are a strict evaluator.",
+    "Choose which candidate better satisfies the task.",
+    'Return ONLY JSON: {"winner":"A"} or {"winner":"B"}.',
+    "No markdown, no extra text.",
+  ].join(" ")
 
   export type StreamInput = {
     user: MessageV2.User
@@ -42,6 +50,14 @@ export namespace LLM {
   }
 
   export type StreamOutput = StreamTextResult<ToolSet, unknown>
+
+  type TTCConfig = {
+    enabled: boolean
+    local_only: boolean
+    strategy: "knockout"
+    samples: number
+    comparisons: number
+  }
 
   export async function stream(input: StreamInput) {
     const l = log
@@ -148,6 +164,56 @@ export namespace LLM {
       isCodex || provider.id.includes("github-copilot") ? undefined : ProviderTransform.maxOutputTokens(input.model)
 
     const tools = await resolveTools(input)
+    const wrapped = wrapLanguageModel({
+      model: language,
+      middleware: [
+        {
+          async transformParams(args) {
+            if (args.type === "stream") {
+              // @ts-expect-error
+              args.params.prompt = ProviderTransform.message(args.params.prompt, input.model, options)
+            }
+            return args.params
+          },
+        },
+      ],
+    })
+    const baseMessages: ModelMessage[] = [
+      ...system.map(
+        (x): ModelMessage => ({
+          role: "system",
+          content: x,
+        }),
+      ),
+      ...input.messages,
+    ]
+
+    const ttc = resolveTTC(cfg)
+    const useTTC = shouldUseTTC({ input, model: input.model, provider, ttc, params, isCodex })
+    if (useTTC) {
+      const winner = await runTTC({
+        input,
+        ttc,
+        params,
+        wrapped,
+        maxOutputTokens,
+        options: params.options,
+        baseMessages,
+      })
+      if (winner) {
+        system.push(
+          [
+            "<system-reminder>",
+            "A test-time-compute selection was run for reliability.",
+            "Use the selected draft as your primary trajectory and avoid drifting away from it.",
+            "<ttc-selected-draft>",
+            winner.slice(0, TTC_MAX_DRAFT_CHARS),
+            "</ttc-selected-draft>",
+            "</system-reminder>",
+          ].join("\n"),
+        )
+      }
+    }
 
     // LiteLLM and some Anthropic proxies require the tools parameter to be present
     // when message history contains tool calls, even if no tools are being used.
@@ -231,20 +297,7 @@ export namespace LLM {
         ),
         ...input.messages,
       ],
-      model: wrapLanguageModel({
-        model: language,
-        middleware: [
-          {
-            async transformParams(args) {
-              if (args.type === "stream") {
-                // @ts-expect-error
-                args.params.prompt = ProviderTransform.message(args.params.prompt, input.model, options)
-              }
-              return args.params
-            },
-          },
-        ],
-      }),
+      model: wrapped,
       experimental_telemetry: {
         isEnabled: cfg.experimental?.openTelemetry,
         metadata: {
@@ -263,6 +316,302 @@ export namespace LLM {
       }
     }
     return input.tools
+  }
+
+  function resolveTTC(cfg: Awaited<ReturnType<typeof Config.get>>): TTCConfig {
+    const raw = cfg.experimental?.ttc
+    return {
+      enabled: raw?.enabled ?? true,
+      local_only: raw?.local_only ?? true,
+      strategy: raw?.strategy ?? "knockout",
+      samples: Math.max(2, Math.min(9, raw?.samples ?? 3)),
+      comparisons: Math.max(1, Math.min(7, raw?.comparisons ?? 3)),
+    }
+  }
+
+  function isLocalProvider(input: { model: Provider.Model; provider: Provider.Info }) {
+    if (input.model.providerID.toLowerCase().includes("ollama")) return true
+    if (input.provider.id.toLowerCase().includes("ollama")) return true
+    if (isLocalURL(input.provider.options?.["baseURL"])) return true
+    if (isLocalURL(input.model.api.url)) return true
+    return false
+  }
+
+  function isLocalURL(value: unknown) {
+    if (typeof value !== "string") return false
+    return /(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])/.test(value)
+  }
+
+  function shouldUseTTC(input: {
+    input: StreamInput
+    model: Provider.Model
+    provider: Provider.Info
+    ttc: TTCConfig
+    params: { temperature?: number }
+    isCodex: boolean
+  }) {
+    if (!input.ttc.enabled) return false
+    if (input.isCodex) return false
+    if (input.input.small) return false
+    if (input.input.toolChoice === "required") return false
+    if (!input.model.capabilities.temperature) return false
+    if (input.ttc.local_only && !isLocalProvider({ model: input.model, provider: input.provider })) return false
+    if (input.params.temperature === 0) return false
+    return true
+  }
+
+  async function runTTC(input: {
+    input: StreamInput
+    ttc: TTCConfig
+    params: { temperature?: number; topP?: number; topK?: number; options?: Record<string, any> }
+    wrapped: ReturnType<typeof wrapLanguageModel>
+    maxOutputTokens: number | undefined
+    options: Record<string, any>
+    baseMessages: ModelMessage[]
+  }) {
+    if (input.ttc.strategy !== "knockout") return
+
+    const l = log
+      .clone()
+      .tag("providerID", input.input.model.providerID)
+      .tag("modelID", input.input.model.id)
+      .tag("sessionID", input.input.sessionID)
+      .tag("ttc", "knockout")
+    const samples = await Promise.all(
+      Array.from({ length: input.ttc.samples }, (_, i) =>
+        sampleCandidate({
+          index: i,
+          input: input.input,
+          params: input.params,
+          wrapped: input.wrapped,
+          maxOutputTokens: input.maxOutputTokens,
+          options: input.options,
+          messages: input.baseMessages,
+        }),
+      ),
+    )
+    const pool = samples.map((value, index) => ({ value, index })).filter((x) => x.value.trim().length > 0)
+    if (pool.length < 2) {
+      l.info("ttc skipped: insufficient candidates", {
+        generated: samples.length,
+        nonEmpty: pool.length,
+      })
+      return pool[0]?.value
+    }
+
+    let nodes = pool
+    let rounds = 0
+    let comparisons = 0
+    while (nodes.length > 1) {
+      rounds++
+      const next: typeof nodes = []
+      for (let i = 0; i < nodes.length; i += 2) {
+        const a = nodes[i]
+        const b = nodes[i + 1]
+        if (!b) {
+          next.push(a)
+          continue
+        }
+        const winner = await compareCandidates({
+          a: a.value,
+          b: b.value,
+          k: input.ttc.comparisons,
+          input: input.input,
+          params: input.params,
+          wrapped: input.wrapped,
+          maxOutputTokens: input.maxOutputTokens,
+          options: input.options,
+          messages: input.baseMessages,
+        })
+        comparisons += input.ttc.comparisons
+        next.push(winner === "A" ? a : b)
+      }
+      nodes = next
+    }
+    l.info("ttc selected winner", {
+      candidates: pool.length,
+      rounds,
+      comparisons,
+      winner: nodes[0].index,
+    })
+    return nodes[0].value
+  }
+
+  async function sampleCandidate(input: {
+    index: number
+    input: StreamInput
+    params: { temperature?: number; topP?: number; topK?: number; options?: Record<string, any> }
+    wrapped: ReturnType<typeof wrapLanguageModel>
+    maxOutputTokens: number | undefined
+    options: Record<string, any>
+    messages: ModelMessage[]
+  }) {
+    const base = input.params.temperature ?? 0.7
+    const jitter = (input.index - 1) * 0.15
+    const temperature = Math.max(0.2, Math.min(1.2, base + jitter))
+    const result = streamText({
+      onError() {},
+      temperature,
+      topP: input.params.topP,
+      topK: input.params.topK,
+      providerOptions: ProviderTransform.providerOptions(input.input.model, input.options),
+      tools: {},
+      activeTools: [],
+      toolChoice: "none",
+      maxOutputTokens: input.maxOutputTokens,
+      abortSignal: input.input.abort,
+      headers: {
+        ...(input.input.model.providerID.startsWith("opencode")
+          ? {
+              "x-opencode-project": Instance.project.id,
+              "x-opencode-session": input.input.sessionID,
+              "x-opencode-request": input.input.user.id,
+              "x-opencode-client": Flag.OPENCODE_CLIENT,
+            }
+          : input.input.model.providerID !== "anthropic"
+            ? {
+                "User-Agent": `opencode/${Installation.VERSION}`,
+              }
+            : undefined),
+        ...input.input.model.headers,
+      },
+      maxRetries: 0,
+      messages: input.messages,
+      model: input.wrapped,
+    })
+    let text = ""
+    for await (const chunk of result.textStream) {
+      text += chunk
+    }
+    return text.trim()
+  }
+
+  async function compareCandidates(input: {
+    a: string
+    b: string
+    k: number
+    input: StreamInput
+    params: { topP?: number; topK?: number; options?: Record<string, any> }
+    wrapped: ReturnType<typeof wrapLanguageModel>
+    maxOutputTokens: number | undefined
+    options: Record<string, any>
+    messages: ModelMessage[]
+  }) {
+    const task = extractTask(input.messages)
+    const votes = await Promise.all(
+      Array.from({ length: input.k }, () =>
+        judgePair({
+          a: input.a,
+          b: input.b,
+          task,
+          input: input.input,
+          params: input.params,
+          wrapped: input.wrapped,
+          maxOutputTokens: input.maxOutputTokens,
+          options: input.options,
+        }),
+      ),
+    )
+    const countA = votes.filter((x) => x === "A").length
+    const countB = votes.length - countA
+    if (countA >= countB) return "A" as const
+    return "B" as const
+  }
+
+  function extractTask(messages: ModelMessage[]) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i]
+      if (msg.role !== "user") continue
+      const content =
+        typeof msg.content === "string"
+          ? msg.content
+          : msg.content
+              .map((part) => {
+                if (part.type === "text") return part.text
+                return ""
+              })
+              .join("\n")
+      const text = content.trim()
+      if (!text) continue
+      return text.slice(0, TTC_MAX_TASK_CHARS)
+    }
+    return "No explicit task text found. Prefer the candidate that best follows prior context and constraints."
+  }
+
+  async function judgePair(input: {
+    a: string
+    b: string
+    task: string
+    input: StreamInput
+    params: { topP?: number; topK?: number; options?: Record<string, any> }
+    wrapped: ReturnType<typeof wrapLanguageModel>
+    maxOutputTokens: number | undefined
+    options: Record<string, any>
+  }) {
+    const result = streamText({
+      onError() {},
+      temperature: 0,
+      topP: input.params.topP,
+      topK: input.params.topK,
+      providerOptions: ProviderTransform.providerOptions(input.input.model, input.options),
+      tools: {},
+      activeTools: [],
+      toolChoice: "none",
+      maxOutputTokens: Math.min(input.maxOutputTokens ?? 256, 256),
+      abortSignal: input.input.abort,
+      headers: {
+        ...(input.input.model.providerID.startsWith("opencode")
+          ? {
+              "x-opencode-project": Instance.project.id,
+              "x-opencode-session": input.input.sessionID,
+              "x-opencode-request": input.input.user.id,
+              "x-opencode-client": Flag.OPENCODE_CLIENT,
+            }
+          : input.input.model.providerID !== "anthropic"
+            ? {
+                "User-Agent": `opencode/${Installation.VERSION}`,
+              }
+            : undefined),
+        ...input.input.model.headers,
+      },
+      maxRetries: 0,
+      messages: [
+        {
+          role: "system",
+          content: TTC_JUDGE_SYSTEM,
+        },
+        {
+          role: "user",
+          content: [
+            "<task>",
+            input.task,
+            "</task>",
+            "<candidate_a>",
+            input.a.slice(0, TTC_MAX_DRAFT_CHARS),
+            "</candidate_a>",
+            "<candidate_b>",
+            input.b.slice(0, TTC_MAX_DRAFT_CHARS),
+            "</candidate_b>",
+            'Return JSON only: {"winner":"A"} or {"winner":"B"}',
+          ].join("\n"),
+        },
+      ],
+      model: input.wrapped,
+    })
+    let text = ""
+    for await (const chunk of result.textStream) {
+      text += chunk
+    }
+    return parseWinner(text)
+  }
+
+  function parseWinner(text: string) {
+    const json = text.match(/"winner"\s*:\s*"([AB])"/i)?.[1]?.toUpperCase()
+    if (json === "B") return "B" as const
+    if (json === "A") return "A" as const
+    const plain = text.match(/\b([AB])\b/i)?.[1]?.toUpperCase()
+    if (plain === "B") return "B" as const
+    return "A" as const
   }
 
   // Check if messages contain any tool-call content
