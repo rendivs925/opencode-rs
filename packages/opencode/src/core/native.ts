@@ -401,6 +401,34 @@ export const streamRead = core.streamRead as (
 
 export const streamKill = core.streamKill as (id: string) => boolean
 
+export const parseApplyPatch = core.parseApplyPatch as (patchText: string) => {
+  hunks: {
+    hunkType: "add" | "delete" | "update"
+    path: string
+    movePath?: string
+    contents?: string
+    chunks?: {
+      oldLines: string[]
+      newLines: string[]
+      changeContext?: string
+      isEndOfFile?: boolean
+    }[]
+  }[]
+}
+
+export const deriveNewContentsFromChunks = core.deriveNewContentsFromChunks as (
+  filePath: string,
+  chunks: {
+    oldLines: string[]
+    newLines: string[]
+    changeContext?: string
+    isEndOfFile?: boolean
+  }[],
+) => {
+  unifiedDiff: string
+  content: string
+}
+
 export const resolveGitDir = core.resolveGitDir as (root: string) => string | undefined | null
 
 export const gitExec = core.gitExec as (

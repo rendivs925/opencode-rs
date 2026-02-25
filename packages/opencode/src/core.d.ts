@@ -217,6 +217,29 @@ declare module "@opencode-ai/core" {
     isComplete: boolean
   }
   export function streamKill(id: string): boolean
+  export function parseApplyPatch(patchText: string): {
+    hunks: Array<{
+      hunkType: "add" | "delete" | "update"
+      path: string
+      movePath?: string
+      contents?: string
+      chunks?: Array<{
+        oldLines: string[]
+        newLines: string[]
+        changeContext?: string
+        isEndOfFile?: boolean
+      }>
+    }>
+  }
+  export function deriveNewContentsFromChunks(
+    filePath: string,
+    chunks: Array<{
+      oldLines: string[]
+      newLines: string[]
+      changeContext?: string
+      isEndOfFile?: boolean
+    }>,
+  ): { unifiedDiff: string; content: string }
   export function resolveGitDir(root: string): string | undefined | null
   export function gitExec(cwd: string, args: string[]): { exitCode: number; stdout: string; stderr: string }
   export function gitExecEnv(
