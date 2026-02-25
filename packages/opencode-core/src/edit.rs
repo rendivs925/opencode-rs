@@ -2,11 +2,17 @@ use aho_corasick::AhoCorasickBuilder;
 use napi::Result;
 use rayon::prelude::*;
 use regex::Regex;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
 const MULTIPLE_MATCHES_ERROR: &str =
     "Found multiple matches for oldString. Provide more surrounding context to make the match unique.";
 const NOT_FOUND_ERROR: &str =
     "Could not find oldString in the file. It must match exactly, including whitespace, indentation, and line endings.";
+const CACHE_LIMIT: usize = 256;
+
+static AC_CACHE: OnceLock<Mutex<HashMap<String, aho_corasick::AhoCorasick>>> = OnceLock::new();
+static REGEX_CACHE: OnceLock<Mutex<HashMap<String, Regex>>> = OnceLock::new();
 
 #[napi(string_enum)]
 pub enum ReplaceStrategy {
@@ -156,9 +162,7 @@ fn find_exact(content: &str, find: &str) -> Vec<(usize, usize)> {
     if find.is_empty() {
         return vec![];
     }
-    let ac = AhoCorasickBuilder::new()
-        .build([find])
-        .expect("single-pattern automaton should build");
+    let ac = cached_ac(find);
     ac.find_iter(content)
         .map(|item| (item.start(), item.end()))
         .collect()
@@ -256,11 +260,53 @@ fn find_whitespace_normalized(content: &str, find: &str) -> Vec<(usize, usize)> 
             .map(|item| regex::escape(item))
             .collect::<Vec<_>>()
             .join(r"\s+");
-        if let Ok(re) = Regex::new(&pat) {
-            re.find_iter(content).for_each(|item| out.push((item.start(), item.end())));
-        }
+        let re = cached_regex(&pat);
+        re.find_iter(content)
+            .for_each(|item| out.push((item.start(), item.end())));
     }
     out
+}
+
+fn ac_cache() -> &'static Mutex<HashMap<String, aho_corasick::AhoCorasick>> {
+    AC_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn regex_cache() -> &'static Mutex<HashMap<String, Regex>> {
+    REGEX_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cached_ac(pattern: &str) -> aho_corasick::AhoCorasick {
+    if let Ok(mut cache) = ac_cache().lock() {
+        if let Some(item) = cache.get(pattern) {
+            return item.clone();
+        }
+        let ac = AhoCorasickBuilder::new()
+            .build([pattern])
+            .expect("single-pattern automaton should build");
+        if cache.len() >= CACHE_LIMIT {
+            cache.clear();
+        }
+        cache.insert(pattern.to_string(), ac.clone());
+        return ac;
+    }
+    AhoCorasickBuilder::new()
+        .build([pattern])
+        .expect("single-pattern automaton should build")
+}
+
+fn cached_regex(pattern: &str) -> Regex {
+    if let Ok(mut cache) = regex_cache().lock() {
+        if let Some(item) = cache.get(pattern) {
+            return item.clone();
+        }
+        let re = Regex::new(pattern).expect("escaped whitespace regex should compile");
+        if cache.len() >= CACHE_LIMIT {
+            cache.clear();
+        }
+        cache.insert(pattern.to_string(), re.clone());
+        return re;
+    }
+    Regex::new(pattern).expect("escaped whitespace regex should compile")
 }
 
 fn unindent(value: &str) -> String {
