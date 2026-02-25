@@ -3,9 +3,10 @@ use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::{mpsc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -106,7 +107,7 @@ fn spawn_reader<T: Read + Send + 'static>(
                 Ok(0) => break,
                 Ok(n) => {
                     let data = String::from_utf8_lossy(&buf[..n]).to_string();
-                    let _ = tx.send(Chunk {
+                    let _ = tx.blocking_send(Chunk {
                         data,
                         stream_type: stream_type.clone(),
                         sequence,
@@ -127,10 +128,32 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+fn wait_chunk(
+    rx: &mut mpsc::Receiver<Chunk>,
+    wait_ms: u32,
+) -> std::result::Result<Chunk, mpsc::error::TryRecvError> {
+    if wait_ms == 0 {
+        return rx.try_recv();
+    }
+    let start = Instant::now();
+    loop {
+        match rx.try_recv() {
+            Ok(item) => return Ok(item),
+            Err(mpsc::error::TryRecvError::Disconnected) => return Err(mpsc::error::TryRecvError::Disconnected),
+            Err(mpsc::error::TryRecvError::Empty) => {
+                if start.elapsed() >= Duration::from_millis(wait_ms as u64) {
+                    return Err(mpsc::error::TryRecvError::Empty);
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+}
+
 #[napi]
 pub fn stream_start(config: StreamStartConfig) -> Result<StreamSession> {
     let chunk_size = config.chunk_size.unwrap_or(64 * 1024) as usize;
-    let (tx, rx) = mpsc::channel::<Chunk>();
+    let (tx, rx) = mpsc::channel::<Chunk>(256);
     let use_pty = config.use_pty.unwrap_or(false);
     let (pid, process, stdin_pipe, pty_writer, sequence) = if use_pty {
         match spawn_pty(&config, tx.clone(), chunk_size) {
@@ -188,19 +211,7 @@ pub fn stream_read(id: String, max_chunks: Option<u32>, wait_ms: Option<u32>) ->
     let mut chunks = vec![];
     while chunks.len() < limit {
         let next = if chunks.is_empty() {
-            if let Some(wait) = wait_ms {
-                if wait > 0 {
-                    match session.rx.recv_timeout(Duration::from_millis(wait as u64)) {
-                        Ok(item) => Ok(item),
-                        Err(mpsc::RecvTimeoutError::Timeout) => Err(mpsc::TryRecvError::Empty),
-                        Err(mpsc::RecvTimeoutError::Disconnected) => Err(mpsc::TryRecvError::Disconnected),
-                    }
-                } else {
-                    session.rx.try_recv()
-                }
-            } else {
-                session.rx.try_recv()
-            }
+            wait_chunk(&mut session.rx, wait_ms.unwrap_or(0))
         } else {
             session.rx.try_recv()
         };
@@ -215,8 +226,8 @@ pub fn stream_read(id: String, max_chunks: Option<u32>, wait_ms: Option<u32>) ->
                 sequence: Some(item.sequence as u32),
                 timestamp_ms: Some(item.timestamp_ms),
             }),
-            Err(mpsc::TryRecvError::Empty) => break,
-            Err(mpsc::TryRecvError::Disconnected) => break,
+            Err(mpsc::error::TryRecvError::Empty) => break,
+            Err(mpsc::error::TryRecvError::Disconnected) => break,
         }
     }
 
