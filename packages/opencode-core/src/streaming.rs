@@ -1,7 +1,7 @@
 use napi::Result;
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{mpsc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -17,6 +17,7 @@ struct Chunk {
 
 struct Session {
     child: Child,
+    stdin_pipe: Option<ChildStdin>,
     rx: mpsc::Receiver<Chunk>,
     complete_sent: bool,
     started: Instant,
@@ -34,6 +35,7 @@ pub struct StreamConfig {
     pub env: HashMap<String, String>,
     pub timeout_ms: Option<u32>,
     pub stdin_mode: Option<String>,
+    pub use_pty: Option<bool>,
 }
 
 #[napi(object)]
@@ -46,6 +48,7 @@ pub struct StreamStartConfig {
     pub timeout_ms: Option<u32>,
     pub chunk_size: Option<u32>,
     pub stdin_mode: Option<String>,
+    pub use_pty: Option<bool>,
 }
 
 #[napi(object)]
@@ -75,6 +78,7 @@ pub struct StreamReadResult {
 }
 
 static SESSIONS: OnceLock<Mutex<HashMap<String, Session>>> = OnceLock::new();
+static PTY_READY: OnceLock<bool> = OnceLock::new();
 
 fn sessions() -> &'static Mutex<HashMap<String, Session>> {
     SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -119,23 +123,33 @@ fn now_ms() -> i64 {
 
 #[napi]
 pub fn stream_start(config: StreamStartConfig) -> Result<StreamSession> {
-    let mut cmd = Command::new(&config.command);
-    let stdin = match config.stdin_mode.as_deref() {
-        Some("piped") => Stdio::piped(),
-        _ => Stdio::null(),
+    let chunk_size = config.chunk_size.unwrap_or(64 * 1024) as usize;
+    let (tx, rx) = mpsc::channel::<Chunk>();
+    let use_pty = config.use_pty.unwrap_or(false);
+    let mut child = if use_pty && pty_ready() {
+        let mut wrapped = Command::new("script");
+        wrapped
+            .arg("-q")
+            .arg("/dev/null")
+            .arg("-c")
+            .arg(build_shell_command(&config.command, &config.args));
+        wrapped
+            .current_dir(&config.cwd)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .stdin(stdin_from_mode(config.stdin_mode.as_deref()));
+        for (k, v) in &config.env {
+            wrapped.env(k, v);
+        }
+        match wrapped.spawn() {
+            Ok(child) => child,
+            Err(_) => spawn_direct(&config)?,
+        }
+    } else {
+        spawn_direct(&config)?
     };
-    cmd.args(&config.args)
-        .current_dir(&config.cwd)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .stdin(stdin);
-    for (k, v) in &config.env {
-        cmd.env(k, v);
-    }
-
-    let mut child = cmd
-        .spawn()
-        .map_err(|err| napi::Error::from_reason(err.to_string()))?;
+    let pid = child.id();
+    let stdin_pipe = child.stdin.take();
     let stdout = child
         .stdout
         .take()
@@ -144,30 +158,24 @@ pub fn stream_start(config: StreamStartConfig) -> Result<StreamSession> {
         .stderr
         .take()
         .ok_or_else(|| napi::Error::from_reason("missing stderr".to_string()))?;
-
-    let chunk_size = config.chunk_size.unwrap_or(64 * 1024) as usize;
-    let (tx, rx) = mpsc::channel::<Chunk>();
     spawn_reader(stdout, tx.clone(), "stdout", chunk_size, 0);
     spawn_reader(stderr, tx, "stderr", chunk_size, 1);
+    let session = Session {
+        child,
+        stdin_pipe,
+        rx,
+        complete_sent: false,
+        started: Instant::now(),
+        timeout_ms: config.timeout_ms,
+        reason: None,
+        sequence: 2,
+    };
 
     let id = Uuid::new_v4().to_string();
-    let pid = child.id();
     sessions()
         .lock()
         .map_err(|_| napi::Error::from_reason("stream lock failed".to_string()))?
-        .insert(
-            id.clone(),
-            Session {
-                child,
-                rx,
-                complete_sent: false,
-                started: Instant::now(),
-                timeout_ms: config.timeout_ms,
-                reason: None,
-                sequence: 2,
-            },
-        );
-
+        .insert(id.clone(), session);
     Ok(StreamSession { id, pid })
 }
 
@@ -232,11 +240,7 @@ pub fn stream_read(id: String, max_chunks: Option<u32>, wait_ms: Option<u32>) ->
     }
 
     if !session.complete_sent {
-        if let Some(status) = session
-            .child
-            .try_wait()
-            .map_err(|err| napi::Error::from_reason(err.to_string()))?
-        {
+        if let Some(exit) = try_wait_process(&mut session.child)? {
             session.complete_sent = true;
             let reason = session.reason.clone().unwrap_or_else(|| "exit".to_string());
             let sequence = session.sequence;
@@ -245,7 +249,7 @@ pub fn stream_read(id: String, max_chunks: Option<u32>, wait_ms: Option<u32>) ->
                 data: String::new(),
                 stream_type: "stdout".to_string(),
                 is_complete: true,
-                exit_code: status.code(),
+                exit_code: Some(exit),
                 complete_reason: Some(reason),
                 sequence: Some(sequence as u32),
                 timestamp_ms: Some(now_ms()),
@@ -272,7 +276,7 @@ pub fn stream_write(id: String, data: String, close: Option<bool>) -> Result<boo
     let Some(session) = store.get_mut(&id) else {
         return Ok(false);
     };
-    if let Some(stdin) = session.child.stdin.as_mut() {
+    if let Some(stdin) = session.stdin_pipe.as_mut() {
         if !data.is_empty() {
             stdin
                 .write_all(data.as_bytes())
@@ -282,7 +286,7 @@ pub fn stream_write(id: String, data: String, close: Option<bool>) -> Result<boo
                 .map_err(|err| napi::Error::from_reason(err.to_string()))?;
         }
         if close.unwrap_or(false) {
-            let _ = session.child.stdin.take();
+            session.stdin_pipe = None;
         }
         return Ok(true);
     }
@@ -314,6 +318,7 @@ pub fn stream_command(config: StreamConfig) -> Result<StreamChunk> {
         timeout_ms: config.timeout_ms,
         chunk_size: None,
         stdin_mode: config.stdin_mode,
+        use_pty: config.use_pty,
     })?;
 
     let mut data = String::new();
@@ -347,4 +352,60 @@ pub fn stream_command(config: StreamConfig) -> Result<StreamChunk> {
         sequence: None,
         timestamp_ms: None,
     })
+}
+
+fn build_shell_command(command: &str, args: &[String]) -> String {
+    let mut out = vec![shell_escape(command)];
+    out.extend(args.iter().map(|item| shell_escape(item)));
+    out.join(" ")
+}
+
+fn stdin_from_mode(mode: Option<&str>) -> Stdio {
+    match mode {
+        Some("piped") => Stdio::piped(),
+        _ => Stdio::null(),
+    }
+}
+
+fn pty_ready() -> bool {
+    *PTY_READY.get_or_init(|| {
+        let status = Command::new("script")
+            .arg("-q")
+            .arg("/dev/null")
+            .arg("-c")
+            .arg("true")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        status.map(|item| item.success()).unwrap_or(false)
+    })
+}
+
+fn spawn_direct(config: &StreamStartConfig) -> Result<Child> {
+    let mut cmd = Command::new(&config.command);
+    cmd.args(&config.args)
+        .current_dir(&config.cwd)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdin(stdin_from_mode(config.stdin_mode.as_deref()));
+    for (k, v) in &config.env {
+        cmd.env(k, v);
+    }
+    cmd.spawn()
+        .map_err(|err| napi::Error::from_reason(err.to_string()))
+}
+
+fn shell_escape(value: &str) -> String {
+    if value.is_empty() {
+        return "''".to_string();
+    }
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn try_wait_process(child: &mut Child) -> Result<Option<i32>> {
+    child
+        .try_wait()
+        .map_err(|err| napi::Error::from_reason(err.to_string()))
+        .map(|item| item.map(|status| status.code().unwrap_or(0)))
 }

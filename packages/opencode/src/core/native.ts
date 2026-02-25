@@ -366,6 +366,7 @@ export const streamCommand = core.streamCommand as (config: {
   env: Record<string, string>
   timeoutMs?: number
   stdinMode?: "null" | "piped"
+  usePty?: boolean
 }) => {
   data: string
   streamType: "stdout" | "stderr"
@@ -384,6 +385,7 @@ export const streamStart = core.streamStart as (config: {
   timeoutMs?: number
   chunkSize?: number
   stdinMode?: "null" | "piped"
+  usePty?: boolean
 }) => {
   id: string
   pid: number

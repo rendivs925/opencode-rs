@@ -221,4 +221,29 @@ describe("core/native integration contracts", () => {
     expect(out).toContain("HELLO")
     expect(reason).toBe("exit")
   })
+
+  test("streamStart can run with pty backend", () => {
+    const session = streamStart({
+      command: process.execPath,
+      args: ["-e", "process.stdout.write('pty-ok')"],
+      cwd: process.cwd(),
+      env: {},
+      timeoutMs: 2000,
+      chunkSize: 1024,
+      usePty: true,
+    })
+
+    let out = ""
+    let reason = ""
+    for (let i = 0; i < 30; i++) {
+      const read = streamRead(session.id, 64, 100)
+      for (const chunk of read.chunks) {
+        out += chunk.data
+        if (chunk.isComplete) reason = chunk.completeReason || ""
+      }
+      if (read.isComplete) break
+    }
+    expect(out).toContain("pty-ok")
+    expect(reason).toBe("exit")
+  })
 })

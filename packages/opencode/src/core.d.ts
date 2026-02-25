@@ -188,6 +188,7 @@ declare module "@opencode-ai/core" {
     env: Record<string, string>
     timeoutMs?: number
     stdinMode?: "null" | "piped"
+    usePty?: boolean
   }): {
     data: string
     streamType: "stdout" | "stderr"
@@ -205,6 +206,7 @@ declare module "@opencode-ai/core" {
     timeoutMs?: number
     chunkSize?: number
     stdinMode?: "null" | "piped"
+    usePty?: boolean
   }): { id: string; pid: number }
   export function streamRead(
     id: string,
