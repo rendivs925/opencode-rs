@@ -4,6 +4,10 @@ import fs from "fs/promises"
 import path from "path"
 import { tmpdir } from "../fixture/fixture"
 import {
+  globCompiledCacheClear,
+  globCompiledCacheSize,
+  globMatchCompiled,
+  globScanCompiled,
   createTwoFilesPatch,
   buildDiffPatch,
   gitStatus,
@@ -15,6 +19,7 @@ import {
   readDiffSnapshot,
   readFull,
   searchIndexedPaths,
+  searchContentContext,
   searchContentRendered,
   streamKill,
   streamRead,
@@ -63,6 +68,41 @@ describe("core/native integration contracts", () => {
 
     const nodes = listDirectoryProject(tmp.path, tmp.path, tmp.path, [".git", ".DS_Store"])
     expect(nodes.find((item) => item.name === "dist")?.ignored).toBe(true)
+  })
+
+  test("compiled glob cache APIs match and scan with cache reuse", async () => {
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(path.join(dir, "src", "one.ts"), "export const one = 1\n")
+        await Bun.write(path.join(dir, "src", "two.ts"), "export const two = 2\n")
+      },
+    })
+
+    globCompiledCacheClear()
+    expect(globCompiledCacheSize()).toBe(0)
+    expect(globMatchCompiled("**/*.ts", "src/one.ts")).toBe(true)
+    expect(globCompiledCacheSize()).toBe(1)
+
+    const files = globScanCompiled("**/*.ts", tmp.path, 10, false, false, false, false, true)
+    expect(files).toContain("src/one.ts")
+    expect(files).toContain("src/two.ts")
+  })
+
+  test("searchContentContext includes before/after lines", async () => {
+    await using tmp = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(
+          path.join(dir, "src", "ctx.ts"),
+          ["line-a", "line-b", "target-line", "line-d", "line-e"].join("\n"),
+        )
+      },
+    })
+
+    const result = searchContentContext("target-line", tmp.path, ["**/*.ts"], false, false, 10, 10, 2000, 1, 1)
+    expect(result.totalMatches).toBe(1)
+    expect(result.matches[0]?.lineText).toContain("target-line")
+    expect(result.matches[0]?.before).toEqual(["line-b"])
+    expect(result.matches[0]?.after).toEqual(["line-d"])
   })
 
   test("indexed search ranks and keeps hidden dirs behind visible entries", () => {

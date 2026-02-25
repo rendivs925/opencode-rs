@@ -37,6 +37,19 @@ export const globScanParallel = core.globScanParallel as (
 ) => string[]
 
 export const globMatch = core.globMatch as (pattern: string, filepath: string) => boolean
+export const globMatchCompiled = core.globMatchCompiled as (pattern: string, filepath: string) => boolean
+export const globScanCompiled = core.globScanCompiled as (
+  pattern: string,
+  cwd: string,
+  maxDepth?: number,
+  includeHidden?: boolean,
+  followLinks?: boolean,
+  includeAll?: boolean,
+  absolute?: boolean,
+  parallel?: boolean,
+) => string[]
+export const globCompiledCacheSize = core.globCompiledCacheSize as () => number
+export const globCompiledCacheClear = core.globCompiledCacheClear as () => void
 
 export const countTokens = core.countTokens as (path: string, encoding: string) => number
 export const countTokensFromText = core.countTokensFromText as (text: string, encoding: string) => number
@@ -148,6 +161,31 @@ export const searchContentRendered = core.searchContentRendered as (
   totalMatches: number
   displayedMatches: number
   truncated: boolean
+}
+export const searchContentContext = core.searchContentContext as (
+  pattern: string,
+  searchPath: string,
+  globs?: string[],
+  includeHidden?: boolean,
+  followLinks?: boolean,
+  maxDepth?: number,
+  maxResults?: number,
+  maxLineLength?: number,
+  beforeLines?: number,
+  afterLines?: number,
+) => {
+  matches: {
+    path: string
+    modTime: number
+    lineNum: number
+    lineText: string
+    absoluteOffset: number
+    submatches: { text: string; start: number; end: number }[]
+    before: string[]
+    after: string[]
+  }[]
+  hasErrors: boolean
+  totalMatches: number
 }
 
 export const listFiles = core.listFiles as (
