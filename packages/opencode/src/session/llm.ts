@@ -57,6 +57,18 @@ export namespace LLM {
     strategy: "knockout"
     samples: number
     comparisons: number
+    adaptive: boolean
+    verify: boolean
+  }
+
+  type TTCPlan = {
+    enabled: boolean
+    reason?: string
+    strategy: "knockout"
+    samples: number
+    comparisons: number
+    verify: boolean
+    tier: "light" | "balanced" | "deep"
   }
 
   export async function stream(input: StreamInput) {
@@ -189,11 +201,31 @@ export namespace LLM {
     ]
 
     const ttc = resolveTTC(cfg)
-    const useTTC = shouldUseTTC({ input, model: input.model, provider, ttc, params, isCodex })
-    if (useTTC) {
+    const ttcPlan = resolveTTCPlan({
+      input,
+      model: input.model,
+      provider,
+      ttc,
+      params,
+      isCodex,
+      baseMessages,
+    })
+    if (!ttcPlan.enabled) {
+      l.info("ttc disabled", {
+        reason: ttcPlan.reason,
+      })
+    }
+    if (ttcPlan.enabled) {
+      l.info("ttc enabled", {
+        strategy: ttcPlan.strategy,
+        tier: ttcPlan.tier,
+        samples: ttcPlan.samples,
+        comparisons: ttcPlan.comparisons,
+        verify: ttcPlan.verify,
+      })
       const winner = await runTTC({
         input,
-        ttc,
+        ttc: ttcPlan,
         params,
         wrapped,
         maxOutputTokens,
@@ -201,13 +233,34 @@ export namespace LLM {
         baseMessages,
       })
       if (winner) {
+        const verified = ttcPlan.verify
+          ? await runVerifier({
+              draft: winner,
+              input,
+              params,
+              wrapped,
+              maxOutputTokens,
+              options: params.options,
+              messages: baseMessages,
+              comparisons: Math.max(1, Math.min(3, ttcPlan.comparisons)),
+            })
+          : undefined
+        const selected = verified ?? winner
+        if (verified) {
+          l.info("ttc verifier selected rewrite", {
+            draft: winner.length,
+            rewrite: verified.length,
+          })
+        }
         system.push(
           [
             "<system-reminder>",
             "A test-time-compute selection was run for reliability.",
-            "Use the selected draft as your primary trajectory and avoid drifting away from it.",
+            ttcPlan.verify
+              ? "A verifier pass was also run. Use the selected verified draft as your primary trajectory and avoid drifting away from it."
+              : "Use the selected draft as your primary trajectory and avoid drifting away from it.",
             "<ttc-selected-draft>",
-            winner.slice(0, TTC_MAX_DRAFT_CHARS),
+            selected.slice(0, TTC_MAX_DRAFT_CHARS),
             "</ttc-selected-draft>",
             "</system-reminder>",
           ].join("\n"),
@@ -326,6 +379,8 @@ export namespace LLM {
       strategy: raw?.strategy ?? "knockout",
       samples: Math.max(2, Math.min(9, raw?.samples ?? 3)),
       comparisons: Math.max(1, Math.min(7, raw?.comparisons ?? 3)),
+      adaptive: raw?.adaptive ?? true,
+      verify: raw?.verify ?? true,
     }
   }
 
@@ -350,19 +405,101 @@ export namespace LLM {
     params: { temperature?: number }
     isCodex: boolean
   }) {
-    if (!input.ttc.enabled) return false
-    if (input.isCodex) return false
-    if (input.input.small) return false
-    if (input.input.toolChoice === "required") return false
-    if (!input.model.capabilities.temperature) return false
-    if (input.ttc.local_only && !isLocalProvider({ model: input.model, provider: input.provider })) return false
-    if (input.params.temperature === 0) return false
-    return true
+    const local = isLocalProvider({ model: input.model, provider: input.provider })
+    if (!input.ttc.enabled) return { enabled: false as const, reason: "ttc_config_disabled" }
+    if (input.isCodex) return { enabled: false as const, reason: "codex_provider" }
+    if (input.input.small) return { enabled: false as const, reason: "small_model_call" }
+    if (input.input.toolChoice === "required") return { enabled: false as const, reason: "required_tool_choice" }
+    if (!input.model.capabilities.temperature && !local) return { enabled: false as const, reason: "model_no_temperature" }
+    if (input.ttc.local_only && !local)
+      return { enabled: false as const, reason: "non_local_provider" }
+    if (input.params.temperature === 0) return { enabled: false as const, reason: "temperature_zero" }
+    return { enabled: true as const }
+  }
+
+  function resolveTTCPlan(input: {
+    input: StreamInput
+    model: Provider.Model
+    provider: Provider.Info
+    ttc: TTCConfig
+    params: { temperature?: number }
+    isCodex: boolean
+    baseMessages: ModelMessage[]
+  }): TTCPlan {
+    const decision = shouldUseTTC({
+      input: input.input,
+      model: input.model,
+      provider: input.provider,
+      ttc: input.ttc,
+      params: input.params,
+      isCodex: input.isCodex,
+    })
+    if (!decision.enabled) {
+      return {
+        enabled: false,
+        reason: decision.reason,
+        strategy: input.ttc.strategy,
+        samples: input.ttc.samples,
+        comparisons: input.ttc.comparisons,
+        verify: false,
+        tier: "light",
+      }
+    }
+    if (!input.ttc.adaptive) {
+      return {
+        enabled: true,
+        strategy: input.ttc.strategy,
+        samples: input.ttc.samples,
+        comparisons: input.ttc.comparisons,
+        verify: input.ttc.verify,
+        tier: "balanced",
+      }
+    }
+    const task = extractTask(input.baseMessages)
+    const risk = scoreTaskRisk(task)
+    if (risk >= 3) {
+      return {
+        enabled: true,
+        strategy: input.ttc.strategy,
+        samples: Math.max(input.ttc.samples, 5),
+        comparisons: Math.max(input.ttc.comparisons, 5),
+        verify: true,
+        tier: "deep",
+      }
+    }
+    if (risk >= 1) {
+      return {
+        enabled: true,
+        strategy: input.ttc.strategy,
+        samples: input.ttc.samples,
+        comparisons: input.ttc.comparisons,
+        verify: input.ttc.verify,
+        tier: "balanced",
+      }
+    }
+    return {
+      enabled: true,
+      strategy: input.ttc.strategy,
+      samples: Math.max(2, Math.min(3, input.ttc.samples)),
+      comparisons: 1,
+      verify: false,
+      tier: "light",
+    }
+  }
+
+  function scoreTaskRisk(task: string) {
+    const text = task.toLowerCase()
+    let score = 0
+    if (text.length > 600) score += 1
+    if (/```|diff|patch|refactor|rewrite|optimi[sz]e|performance/.test(text)) score += 1
+    if (/security|auth|token|permission|sql|database|migration|deploy|production/.test(text)) score += 2
+    if (/quick|brief|short|tldr/.test(text)) score -= 1
+    return Math.max(0, Math.min(5, score))
   }
 
   async function runTTC(input: {
     input: StreamInput
-    ttc: TTCConfig
+    ttc: Pick<TTCPlan, "strategy" | "samples" | "comparisons">
     params: { temperature?: number; topP?: number; topK?: number; options?: Record<string, any> }
     wrapped: ReturnType<typeof wrapLanguageModel>
     maxOutputTokens: number | undefined
@@ -435,6 +572,102 @@ export namespace LLM {
       winner: nodes[0].index,
     })
     return nodes[0].value
+  }
+
+  async function runVerifier(input: {
+    draft: string
+    input: StreamInput
+    params: { topP?: number; topK?: number; options?: Record<string, any> }
+    wrapped: ReturnType<typeof wrapLanguageModel>
+    maxOutputTokens: number | undefined
+    options: Record<string, any>
+    messages: ModelMessage[]
+    comparisons: number
+  }) {
+    const task = extractTask(input.messages)
+    const result = streamText({
+      onError() {},
+      temperature: 0,
+      topP: input.params.topP,
+      topK: input.params.topK,
+      providerOptions: ProviderTransform.providerOptions(input.input.model, input.options),
+      tools: {},
+      activeTools: [],
+      toolChoice: "none",
+      maxOutputTokens: input.maxOutputTokens,
+      abortSignal: input.input.abort,
+      headers: {
+        ...(input.input.model.providerID.startsWith("opencode")
+          ? {
+              "x-opencode-project": Instance.project.id,
+              "x-opencode-session": input.input.sessionID,
+              "x-opencode-request": input.input.user.id,
+              "x-opencode-client": Flag.OPENCODE_CLIENT,
+            }
+          : input.input.model.providerID !== "anthropic"
+            ? {
+                "User-Agent": `opencode/${Installation.VERSION}`,
+              }
+            : undefined),
+        ...input.input.model.headers,
+      },
+      maxRetries: 0,
+      messages: [
+        {
+          role: "system",
+          content: [
+            "You are a strict verifier for an agent answer.",
+            "Evaluate instruction adherence, factual grounding, and actionability.",
+            'Return ONLY JSON: {"verdict":"pass"} OR {"verdict":"revise","rewrite":"..."}',
+            "If revising, rewrite must be complete and directly usable as the final answer.",
+          ].join(" "),
+        },
+        {
+          role: "user",
+          content: [
+            "<task>",
+            task,
+            "</task>",
+            "<draft>",
+            input.draft.slice(0, TTC_MAX_DRAFT_CHARS),
+            "</draft>",
+            "Return JSON only.",
+          ].join("\n"),
+        },
+      ],
+      model: input.wrapped,
+    })
+    let text = ""
+    for await (const chunk of result.textStream) {
+      text += chunk
+    }
+    const rewrite = parseRewrite(text)
+    if (!rewrite) return
+    const winner = await compareCandidates({
+      a: input.draft,
+      b: rewrite,
+      k: input.comparisons,
+      input: input.input,
+      params: input.params,
+      wrapped: input.wrapped,
+      maxOutputTokens: input.maxOutputTokens,
+      options: input.options,
+      messages: input.messages,
+    })
+    if (winner === "B") return rewrite
+  }
+
+  function parseRewrite(text: string) {
+    const verdict = text.match(/"verdict"\s*:\s*"(pass|revise)"/i)?.[1]?.toLowerCase()
+    if (verdict === "pass") return
+    const match = text.match(/"rewrite"\s*:\s*"([\s\S]*?)"\s*[},]/i)?.[1]
+    if (!match) return
+    const rewrite = match
+      .replace(/\\"/g, '"')
+      .replace(/\\n/g, "\n")
+      .trim()
+    if (!rewrite) return
+    return rewrite
   }
 
   async function sampleCandidate(input: {

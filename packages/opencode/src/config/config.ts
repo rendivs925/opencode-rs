@@ -1226,6 +1226,14 @@ export namespace Config {
                 .max(7)
                 .optional()
                 .describe("Number of judge votes per TTC pairwise match"),
+              adaptive: z
+                .boolean()
+                .optional()
+                .describe("Adapt TTC compute budget by task complexity/risk (default: true)"),
+              verify: z
+                .boolean()
+                .optional()
+                .describe("Run verifier/rewrite pass on TTC winner (default: true)"),
             })
             .optional(),
         })
