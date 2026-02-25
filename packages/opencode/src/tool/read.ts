@@ -9,7 +9,7 @@ import { Instance } from "../project/instance"
 import { assertExternalDirectory } from "./external-directory"
 import { InstructionPrompt } from "../session/instruction"
 import { Filesystem } from "../util/filesystem"
-import { readAttachment, readDirWindow, readFileWindow } from "@/core/native"
+import { classifyReadTarget, isBinaryFile, readAttachment, readDirWindow, readFileWindow } from "@/core/native"
 
 const DEFAULT_READ_LIMIT = 2000
 const MAX_LINE_LENGTH = 2000
@@ -101,6 +101,19 @@ export const ReadTool = Tool.define("read", {
     }
 
     const instructions = await InstructionPrompt.resolve(ctx.messages, filepath, ctx.messageID)
+
+    const mode = classifyReadTarget(filepath, filepath)
+    if (mode.exists && mode.mode === "binary" && isBinaryFile(filepath)) {
+      return {
+        title,
+        output: "Binary file detected. Use a specific decoder or read an attachment preview when supported.",
+        metadata: {
+          preview: "Binary file",
+          truncated: false,
+          loaded: instructions.map((i) => i.filepath),
+        },
+      }
+    }
 
     const attachment = readAttachment(filepath)
     if (attachment.isAttachment && attachment.base64 && attachment.mimeType) {

@@ -7,7 +7,7 @@ import z from "zod"
 import * as path from "path"
 import { Tool } from "./tool"
 import { LSP } from "../lsp"
-import { createTwoFilesPatch, diffLines, replaceContent } from "../core/native"
+import { createTwoFilesPatch, diffLines, findReplacements, levenshteinDistance, replaceContent } from "../core/native"
 import DESCRIPTION from "./edit.txt"
 import { File } from "../file"
 import { FileWatcher } from "../file/watcher"
@@ -78,7 +78,20 @@ export const EditTool = Tool.define("edit", {
       if (stats.isDirectory()) throw new Error(`Path is a directory, not a file: ${filePath}`)
       await FileTime.assert(ctx.sessionID, filePath)
       contentOld = await Filesystem.readText(filePath)
-      contentNew = replaceContent(contentOld, params.oldString, params.newString, params.replaceAll ?? false).content
+      try {
+        contentNew = replaceContent(contentOld, params.oldString, params.newString, params.replaceAll ?? false).content
+      } catch (error) {
+        const matches = findReplacements(contentOld, params.oldString, "context_aware")
+        if (!matches.length) throw error
+        const nearest = matches
+          .map((item) => ({
+            text: item.text,
+            distance: levenshteinDistance(item.text, params.oldString),
+          }))
+          .sort((a, b) => a.distance - b.distance)[0]
+        if (!nearest) throw error
+        throw new Error(`${error instanceof Error ? error.message : String(error)}\nClosest match distance: ${nearest.distance}`)
+      }
 
       diff = trimDiff(
         createTwoFilesPatch(filePath, filePath, normalizeLineEndings(contentOld), normalizeLineEndings(contentNew)),

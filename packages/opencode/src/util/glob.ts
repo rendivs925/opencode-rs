@@ -1,4 +1,16 @@
-import { globMatch, globScan, globScanParallel, readGlobCache, writeGlobCache } from "@/core/native"
+import {
+  clearCache,
+  deleteCache,
+  fastHash,
+  globCompiledCacheClear,
+  globCompiledCacheSize,
+  globMatchCompiled,
+  globParallel,
+  globScanParallel,
+  globScanCompiled,
+  readGlobCache,
+  writeGlobCache,
+} from "@/core/native"
 import fs from "fs"
 import path from "path"
 import os from "os"
@@ -19,7 +31,8 @@ export namespace Glob {
   function key(pattern: string, options: Options) {
     const cwd = path.resolve(options.cwd ?? ".")
     const stat = fs.statSync(cwd)
-    return [
+    return fastHash(
+      [
       cwd,
       pattern,
       options.absolute ? "abs" : "rel",
@@ -28,7 +41,13 @@ export namespace Glob {
       options.symlink ? "follow" : "nofollow",
       stat.size,
       stat.mtimeMs,
-    ].join("|")
+      ].join("|"),
+    )
+  }
+
+  function maybeTrimCoreCache() {
+    if (globCompiledCacheSize() <= 512) return
+    globCompiledCacheClear()
   }
 
   export async function scan(pattern: string, options: Options = {}): Promise<string[]> {
@@ -37,7 +56,7 @@ export namespace Glob {
       const k = key(pattern, options)
       const cached = readGlobCache(DIR, k)
       if (cached != null) return cached
-      const results = globScan(
+      const results = globScanCompiled(
         pattern,
         options.cwd ?? ".",
         10,
@@ -45,11 +64,14 @@ export namespace Glob {
         options.symlink ?? false,
         includeAll,
         options.absolute ?? false,
+        false,
       )
+      deleteCache(DIR, k)
       writeGlobCache(DIR, k, results)
+      maybeTrimCoreCache()
       return results
     }
-    return globScan(
+    return globScanCompiled(
       pattern,
       options.cwd ?? ".",
       10,
@@ -57,6 +79,7 @@ export namespace Glob {
       options.symlink ?? false,
       includeAll,
       options.absolute ?? false,
+      false,
     )
   }
 
@@ -66,7 +89,7 @@ export namespace Glob {
       const k = key(pattern, options)
       const cached = readGlobCache(DIR, k)
       if (cached != null) return cached
-      const results = globScanParallel(
+      const results = globScanCompiled(
         pattern,
         options.cwd ?? ".",
         10,
@@ -74,11 +97,34 @@ export namespace Glob {
         options.symlink ?? false,
         includeAll,
         options.absolute ?? false,
+        true,
       )
+      deleteCache(DIR, k)
       writeGlobCache(DIR, k, results)
+      maybeTrimCoreCache()
       return results
     }
-    return globScanParallel(
+    if (!includeAll && !(options.absolute ?? false)) {
+      return globParallel(
+        pattern,
+        options.cwd ?? ".",
+        10,
+        options.dot ?? false,
+        options.symlink ?? false,
+      )
+    }
+    if (!includeAll) {
+      return globScanParallel(
+        pattern,
+        options.cwd ?? ".",
+        10,
+        options.dot ?? false,
+        options.symlink ?? false,
+        false,
+        options.absolute ?? false,
+      )
+    }
+    return globScanCompiled(
       pattern,
       options.cwd ?? ".",
       10,
@@ -86,10 +132,16 @@ export namespace Glob {
       options.symlink ?? false,
       includeAll,
       options.absolute ?? false,
+      true,
     )
   }
 
   export function match(pattern: string, filepath: string): boolean {
-    return globMatch(pattern, filepath)
+    return globMatchCompiled(pattern, filepath)
+  }
+
+  export function clear() {
+    clearCache(DIR)
+    globCompiledCacheClear()
   }
 }

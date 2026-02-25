@@ -6,6 +6,8 @@ import { Instance } from "../project/instance"
 import { Global } from "../global"
 import {
   buildDiffPatch,
+  caseFoldAscii,
+  countUntrackedLines,
   gitStatus,
   indexGlobalHomeDirs,
   indexPathsCached,
@@ -135,10 +137,14 @@ export namespace File {
   export async function status() {
     const project = Instance.project
     if (project.vcs !== "git") return []
-    return gitStatus(Instance.directory).map((x) => {
+    const status = gitStatus(Instance.directory)
+    const added = status.filter((item) => item.status === "added").map((item) => item.path)
+    const counts = new Map(countUntrackedLines(Instance.directory, added).map((item) => [item.path, item.lines]))
+    return status.map((x) => {
       const full = path.isAbsolute(x.path) ? x.path : path.join(Instance.directory, x.path)
       return {
         ...x,
+        added: x.status === "added" ? counts.get(x.path) ?? x.added : x.added,
         path: path.relative(Instance.directory, full),
       }
     })
@@ -201,18 +207,25 @@ export namespace File {
 
   export async function search(input: { query: string; limit?: number; dirs?: boolean; type?: "file" | "directory" }) {
     const query = input.query.trim()
+    const ascii = /^[\x00-\x7F]*$/.test(query)
     const limit = input.limit ?? 100
     const kind = input.type ?? (input.dirs === false ? "file" : "all")
     log.info("search", { query, kind })
     const isGlobalHome = Instance.directory === Global.Path.home && Instance.project.id === "global"
     if (!isGlobalHome) {
-      const output = searchPaths(Instance.directory, query, kind, limit, true, false)
+      let output = searchPaths(Instance.directory, query, kind, limit, true, false)
+      if (!output.length && ascii) {
+        output = searchPaths(Instance.directory, caseFoldAscii(query), kind, limit, true, false)
+      }
       log.info("search", { query, kind, results: output.length })
       return output
     }
 
     const result = await state().then((x) => x.files())
-    const output = searchIndexedPaths(result, query, kind, limit)
+    let output = searchIndexedPaths(result, query, kind, limit)
+    if (!output.length && ascii) {
+      output = searchIndexedPaths(result, caseFoldAscii(query), kind, limit)
+    }
 
     log.info("search", { query, kind, results: output.length })
     return output

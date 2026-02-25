@@ -1,4 +1,13 @@
-import { countTokens, countTokensFromText, readTokenCache, writeTokenCache } from "@/core/native"
+import {
+  clearCache,
+  countTokens,
+  countTokensFromText,
+  countTokensStreaming,
+  fastHash,
+  fileHash,
+  readTokenCache,
+  writeTokenCache,
+} from "@/core/native"
 import path from "path"
 import { statSync } from "fs"
 import os from "os"
@@ -8,12 +17,12 @@ export namespace Token {
   const DIR = path.join(xdgCache || process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache"), "opencode", "rust-token")
 
   function keyText(input: string, encoding: string) {
-    return `text:${encoding}:${input.length}:${Bun.hash.xxHash32(input)}`
+    return `text:${encoding}:${input.length}:${fastHash(input)}`
   }
 
   function keyFile(filepath: string, encoding: string) {
     const stat = statSync(filepath)
-    return `file:${encoding}:${path.resolve(filepath)}:${stat.size}:${stat.mtimeMs}`
+    return `file:${encoding}:${path.resolve(filepath)}:${stat.size}:${stat.mtimeMs}:${fileHash(filepath)}`
   }
 
   export function estimate(input: string) {
@@ -40,8 +49,13 @@ export namespace Token {
     const key = keyFile(filepath, encoding)
     const cached = readTokenCache(DIR, key)
     if (cached != null) return cached
-    const result = countTokens(filepath, encoding)
+    const stat = statSync(filepath)
+    const result = stat.size > 256 * 1024 ? countTokensStreaming(filepath, encoding, 64 * 1024) : countTokens(filepath, encoding)
     writeTokenCache(DIR, key, result)
     return result
+  }
+
+  export function clear() {
+    clearCache(DIR)
   }
 }

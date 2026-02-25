@@ -13,7 +13,7 @@ import { Shell } from "@/shell/shell"
 import { BashArity } from "@/permission/arity"
 import { Truncate } from "./truncation"
 import { Plugin } from "@/plugin"
-import { parseBashCommand, streamKill, streamRead, streamStart } from "../core/native"
+import { parseBashCommand, streamCommand, streamKill, streamRead, streamStart, streamWrite } from "../core/native"
 
 const MAX_METADATA_LENGTH = 30_000
 const DEFAULT_TIMEOUT = Flag.OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS || 2 * 60 * 1000
@@ -41,6 +41,8 @@ export const BashTool = Tool.define("bash", async () => {
     parameters: z.object({
       command: z.string().describe("The command to execute"),
       timeout: z.number().describe("Optional timeout in milliseconds").optional(),
+      stdin: z.string().describe("Optional stdin payload to send before reading output").optional(),
+      mode: z.enum(["incremental", "oneshot"]).describe("Streaming mode").optional(),
       workdir: z
         .string()
         .describe(
@@ -59,6 +61,7 @@ export const BashTool = Tool.define("bash", async () => {
         throw new Error(`Invalid timeout value: ${params.timeout}. Timeout must be a positive number.`)
       }
       const timeout = params.timeout ?? DEFAULT_TIMEOUT
+      const mode = params.mode ?? "incremental"
       const directories = new Set<string>()
       if (!Instance.containsPath(cwd)) directories.add(cwd)
       const patterns = new Set<string>()
@@ -167,31 +170,51 @@ export const BashTool = Tool.define("bash", async () => {
       }
 
       const runtime = shellArgs(shell, params.command)
-      const session = streamStart({
-        command: runtime.command,
-        args: runtime.args,
-        cwd,
-        env,
-        timeoutMs: timeout,
-        chunkSize: 64 * 1024,
-      })
+      if (mode === "oneshot") {
+        const single = streamCommand({
+          command: runtime.command,
+          args: runtime.args,
+          cwd,
+          env,
+          timeoutMs: timeout,
+          stdinMode: params.stdin ? "piped" : "null",
+        })
+        output = single.data
+        exit = single.exitCode
+        reason = single.completeReason
+      }
 
       let aborted = false
-      while (true) {
-        if (ctx.abort.aborted && !aborted) {
-          aborted = true
-          streamKill(session.id)
+      if (mode !== "oneshot") {
+        const session = streamStart({
+          command: runtime.command,
+          args: runtime.args,
+          cwd,
+          env,
+          timeoutMs: timeout,
+          chunkSize: 64 * 1024,
+          stdinMode: params.stdin ? "piped" : "null",
+        })
+        if (params.stdin) {
+          streamWrite(session.id, params.stdin)
+          streamWrite(session.id, "", true)
         }
-
-        const read = streamRead(session.id, 128, 100)
-        for (const chunk of read.chunks) {
-          if (chunk.data) append(chunk.data)
-          if (chunk.isComplete) {
-            exit = chunk.exitCode
-            reason = chunk.completeReason
+        while (true) {
+          if (ctx.abort.aborted && !aborted) {
+            aborted = true
+            streamKill(session.id)
           }
+
+          const read = streamRead(session.id, 128, 100)
+          for (const chunk of read.chunks) {
+            if (chunk.data) append(chunk.data)
+            if (chunk.isComplete) {
+              exit = chunk.exitCode
+              reason = chunk.completeReason
+            }
+          }
+          if (read.isComplete) break
         }
-        if (read.isComplete) break
       }
 
       const resultMetadata: string[] = []

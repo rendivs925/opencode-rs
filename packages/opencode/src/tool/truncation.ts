@@ -1,6 +1,6 @@
 import fs from "fs/promises"
 import path from "path"
-import { truncate } from "@/core/native"
+import { countLinesFast, findWhitespaceIndices, truncate, truncateBytes, truncateLines, truncateTail } from "@/core/native"
 import { Global } from "../global"
 import { Identifier } from "../id/id"
 import { PermissionNext } from "../permission/next"
@@ -24,6 +24,8 @@ export namespace Truncate {
     maxBytes?: number
     direction?: "head" | "tail"
   }
+
+  type NativeTruncate = { text: string; lines: number; bytes: number; truncated: boolean }
 
   export function init() {
     Scheduler.register({
@@ -53,19 +55,25 @@ export namespace Truncate {
     const maxLines = options.maxLines ?? MAX_LINES
     const maxBytes = options.maxBytes ?? MAX_BYTES
     const direction = options.direction ?? "head"
-    const lines = text.split("\n")
+    const lines = countLinesFast(text)
     const totalBytes = Buffer.byteLength(text, "utf-8")
 
-    if (lines.length <= maxLines && totalBytes <= maxBytes) {
+    if (lines <= maxLines && totalBytes <= maxBytes) {
       return { content: text, truncated: false }
     }
 
-    const result = truncate(text, maxLines, maxBytes, direction)
+    const result = (
+      direction === "tail"
+        ? truncateBytes((truncateTail(text, maxLines) as NativeTruncate).text, maxBytes)
+        : totalBytes > maxBytes
+          ? truncateBytes((truncateLines(text, maxLines) as NativeTruncate).text, maxBytes)
+          : truncate(text, maxLines, maxBytes, direction)
+    ) as NativeTruncate
     const preview = result.text
     const resultBytes = result.bytes
     const resultLines = result.lines
     const byteLimited = totalBytes > maxBytes && resultBytes <= maxBytes
-    const removed = byteLimited ? totalBytes - resultBytes : lines.length - resultLines
+    const removed = byteLimited ? totalBytes - resultBytes : lines - resultLines
     const unit = byteLimited ? "bytes" : "lines"
 
     const id = Identifier.ascending("tool")
@@ -80,6 +88,9 @@ export namespace Truncate {
         ? `${preview}\n\n...${removed} ${unit} truncated...\n\n${hint}`
         : `...${removed} ${unit} truncated...\n\n${hint}\n\n${preview}`
 
+    if (!findWhitespaceIndices(message).length) {
+      return { content: message, truncated: true, outputPath: filepath }
+    }
     return { content: message, truncated: true, outputPath: filepath }
   }
 }

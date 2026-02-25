@@ -1,5 +1,5 @@
 // Ripgrep-compatible utility functions backed by Rust core
-import { listFiles, renderTree, searchContentAdvanced } from "@/core/native"
+import { filterPaths, listFiles, renderTree, searchContentAdvanced } from "@/core/native"
 import path from "path"
 import fs from "fs/promises"
 import z from "zod"
@@ -108,8 +108,9 @@ export namespace Ripgrep {
 
     const globs = ["!.git/*", ...(input.glob ?? [])]
     const result = listFiles(input.cwd, globs, input.hidden !== false, input.follow, input.maxDepth)
+    const files = filterPaths(result.files, ["!.git/**"])
 
-    for (const file of result.files) {
+    for (const file of files) {
       input.signal?.throwIfAborted()
       yield file
     }

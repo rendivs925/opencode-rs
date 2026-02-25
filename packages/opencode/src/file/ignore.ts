@@ -1,4 +1,4 @@
-import { compilePatterns } from "@/core/native"
+import { CompiledIgnore, compilePatterns } from "@/core/native"
 import { sep } from "node:path"
 
 export namespace FileIgnore {
@@ -56,10 +56,7 @@ export namespace FileIgnore {
 
   const FOLDER_PATTERNS = [...FOLDERS].flatMap((item) => [`${item}`, `${item}/**`, `**/${item}`, `**/${item}/**`])
   export const PATTERNS = [...FILES, ...FOLDER_PATTERNS]
-  const COMPILED = compilePatterns(PATTERNS) as {
-    isIgnored(path: string): boolean
-    isIgnoredWith(path: string, extraPatterns?: string[], whitelist?: string[]): boolean
-  }
+  const COMPILED = compilePatterns(PATTERNS) as InstanceType<typeof CompiledIgnore>
 
   export function match(
     filepath: string,
