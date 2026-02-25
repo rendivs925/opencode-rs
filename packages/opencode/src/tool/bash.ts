@@ -1,5 +1,4 @@
 import z from "zod"
-import { spawn } from "child_process"
 import { Tool } from "./tool"
 import path from "path"
 import DESCRIPTION from "./bash.txt"
@@ -209,85 +208,32 @@ export const BashTool = Tool.define("bash", async () => {
         })
       }
 
+      const runtime = shellArgs(shell, params.command)
+      const session = streamStart({
+        command: runtime.command,
+        args: runtime.args,
+        cwd,
+        env,
+        timeoutMs: timeout,
+        chunkSize: 64 * 1024,
+      })
+
       let aborted = false
-      if (typeof streamStart === "function" && typeof streamRead === "function" && typeof streamKill === "function") {
-        const runtime = shellArgs(shell, params.command)
-        const session = streamStart({
-          command: runtime.command,
-          args: runtime.args,
-          cwd,
-          env,
-          timeoutMs: timeout,
-          chunkSize: 64 * 1024,
-        })
-
-        while (true) {
-          if (ctx.abort.aborted && !aborted) {
-            aborted = true
-            streamKill(session.id)
-          }
-
-          const read = streamRead(session.id, 128, 100)
-          for (const chunk of read.chunks) {
-            if (chunk.data) append(chunk.data)
-            if (chunk.isComplete) {
-              exit = chunk.exitCode
-              reason = chunk.completeReason
-            }
-          }
-          if (read.isComplete) break
-        }
-      } else {
-        const proc = spawn(params.command, {
-          shell,
-          cwd,
-          env,
-          stdio: ["ignore", "pipe", "pipe"],
-          detached: process.platform !== "win32",
-        })
-        const appendBuffer = (chunk: Buffer) => append(chunk.toString())
-        proc.stdout?.on("data", appendBuffer)
-        proc.stderr?.on("data", appendBuffer)
-
-        let exited = false
-        const kill = () => Shell.killTree(proc, { exited: () => exited })
-
-        if (ctx.abort.aborted) {
+      while (true) {
+        if (ctx.abort.aborted && !aborted) {
           aborted = true
-          await kill()
+          streamKill(session.id)
         }
 
-        const abortHandler = () => {
-          aborted = true
-          void kill()
-        }
-
-        ctx.abort.addEventListener("abort", abortHandler, { once: true })
-
-        const timeoutTimer = setTimeout(() => {
-          reason = "timeout"
-          void kill()
-        }, timeout + 100)
-
-        await new Promise<void>((resolve, reject) => {
-          const cleanup = () => {
-            clearTimeout(timeoutTimer)
-            ctx.abort.removeEventListener("abort", abortHandler)
+        const read = streamRead(session.id, 128, 100)
+        for (const chunk of read.chunks) {
+          if (chunk.data) append(chunk.data)
+          if (chunk.isComplete) {
+            exit = chunk.exitCode
+            reason = chunk.completeReason
           }
-
-          proc.once("exit", (code) => {
-            exited = true
-            cleanup()
-            exit = code ?? undefined
-            resolve()
-          })
-
-          proc.once("error", (error) => {
-            exited = true
-            cleanup()
-            reject(error)
-          })
-        })
+        }
+        if (read.isComplete) break
       }
 
       const resultMetadata: string[] = []

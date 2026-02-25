@@ -16,8 +16,11 @@
     ]
   },
   "scripts": {
-    "build": "cargo build --release",
-    "build:debug": "cargo build",
+    "build": "RUSTC_WRAPPER= cargo build --release && node script/sync-prebuild.mjs --release && node script/generate-exports.mjs --check",
+    "build:debug": "RUSTC_WRAPPER= cargo build && node script/sync-prebuild.mjs && node script/generate-exports.mjs --check",
+    "prepare:local": "bun run build:debug",
+    "exports:sync": "node script/generate-exports.mjs",
+    "exports:check": "node script/generate-exports.mjs --check",
     "bench:native": "node script/benchmark.mjs",
     "bench:compare": "node script/benchmark-compare.mjs",
     "prepublishOnly": "npm run build"

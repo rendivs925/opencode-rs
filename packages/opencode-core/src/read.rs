@@ -1,7 +1,10 @@
 use base64::Engine;
+use crate::create_two_files_patch;
 use napi::Result;
+use regex::Regex;
 use std::path::Path;
 use std::process::Command;
+use std::sync::OnceLock;
 
 const BINARY_EXTENSIONS: &[&str] = &[
     "zip", "tar", "gz", "exe", "dll", "so", "class", "jar", "war", "7z", "doc", "docx", "xls",
@@ -379,43 +382,56 @@ pub fn read_diff_snapshot(root: String, file: String) -> Result<ReadDiffSnapshot
 
 #[napi]
 pub fn build_diff_patch(file: String, original: String, content: String) -> Result<DiffPatchResult> {
-    let old = split_lines_preserve_empty(&original);
-    let new = split_lines_preserve_empty(&content);
+    let diff = create_two_files_patch(file.clone(), file.clone(), original, content);
+    let mut old_file_name = file.clone();
+    let mut new_file_name = file.clone();
+    let mut hunks = Vec::<DiffHunk>::new();
+    let mut current: Option<DiffHunk> = None;
 
-    let mut lines = Vec::new();
-    for item in old.iter() {
-        lines.push(format!("-{item}"));
-    }
-    for item in new.iter() {
-        lines.push(format!("+{item}"));
+    for line in diff.lines() {
+        if let Some(rest) = line.strip_prefix("--- ") {
+            old_file_name = rest.to_string();
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("+++ ") {
+            new_file_name = rest.to_string();
+            continue;
+        }
+        if line.starts_with("@@ ") {
+            if let Some(hunk) = current.take() {
+                hunks.push(hunk);
+            }
+            let (old_start, old_lines, new_start, new_lines) = parse_hunk_header(line)?;
+            current = Some(DiffHunk {
+                old_start: old_start as i32,
+                old_lines: old_lines as i32,
+                new_start: new_start as i32,
+                new_lines: new_lines as i32,
+                lines: Vec::new(),
+            });
+            continue;
+        }
+        if let Some(hunk) = current.as_mut() {
+            if line.starts_with('+') || line.starts_with('-') || line.starts_with(' ') {
+                hunk.lines.push(line.to_string());
+            }
+        }
     }
 
-    let hunk = DiffHunk {
-        old_start: 1,
-        old_lines: old.len() as i32,
-        new_start: 1,
-        new_lines: new.len() as i32,
-        lines: lines.clone(),
-    };
+    if let Some(hunk) = current.take() {
+        hunks.push(hunk);
+    }
+
     let patch = DiffPatch {
-        old_file_name: file.clone(),
-        new_file_name: file.clone(),
-        old_header: Some("old".to_string()),
-        new_header: Some("new".to_string()),
-        hunks: vec![hunk],
+        old_file_name,
+        new_file_name,
+        old_header: None,
+        new_header: None,
+        hunks,
         index: None,
     };
 
-    let mut out = String::new();
-    out.push_str(&format!("--- {file}\n"));
-    out.push_str(&format!("+++ {file}\n"));
-    out.push_str(&format!("@@ -1,{} +1,{} @@\n", old.len(), new.len()));
-    for line in lines {
-        out.push_str(&line);
-        out.push('\n');
-    }
-
-    Ok(DiffPatchResult { diff: out, patch })
+    Ok(DiffPatchResult { diff, patch })
 }
 
 #[napi]
@@ -736,14 +752,33 @@ fn run_git_exec(
     })
 }
 
-fn split_lines_preserve_empty(value: &str) -> Vec<String> {
-    if value.is_empty() {
-        return Vec::new();
-    }
-    let normalized = value.replace("\r\n", "\n");
-    normalized
-        .trim_end_matches('\n')
-        .split('\n')
-        .map(|line| line.to_string())
-        .collect()
+fn hunk_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+            .expect("valid read hunk regex")
+    })
+}
+
+fn parse_hunk_header(line: &str) -> Result<(usize, usize, usize, usize)> {
+    let caps = hunk_regex()
+        .captures(line)
+        .ok_or_else(|| napi::Error::from_reason("invalid hunk header".to_string()))?;
+    let old_start = caps
+        .get(1)
+        .and_then(|m| m.as_str().parse::<usize>().ok())
+        .ok_or_else(|| napi::Error::from_reason("invalid old start".to_string()))?;
+    let old_lines = caps
+        .get(2)
+        .and_then(|m| m.as_str().parse::<usize>().ok())
+        .unwrap_or(1);
+    let new_start = caps
+        .get(3)
+        .and_then(|m| m.as_str().parse::<usize>().ok())
+        .ok_or_else(|| napi::Error::from_reason("invalid new start".to_string()))?;
+    let new_lines = caps
+        .get(4)
+        .and_then(|m| m.as_str().parse::<usize>().ok())
+        .unwrap_or(1);
+    Ok((old_start, old_lines, new_start, new_lines))
 }

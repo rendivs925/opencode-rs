@@ -382,4 +382,31 @@ mod tests {
         assert!(lines[0].starts_with("--- "));
         assert!(lines[1].starts_with("+++ "));
     }
+
+    #[test]
+    fn applies_insertions_at_start_and_end() {
+        let before = "mid\n".to_string();
+        let after = "start\nmid\nend\n".to_string();
+        let patch = create_two_files_patch("a.txt".to_string(), "a.txt".to_string(), before.clone(), after.clone());
+        let applied = apply_patch(before, patch).expect("patch should apply");
+        assert_eq!(applied, after.trim_end().to_string());
+    }
+
+    #[test]
+    fn applies_deletion_only_patch() {
+        let before = "a\nb\nc\n".to_string();
+        let after = "a\n".to_string();
+        let patch = create_two_files_patch("a.txt".to_string(), "a.txt".to_string(), before.clone(), after.clone());
+        let applied = apply_patch(before, patch).expect("patch should apply");
+        assert_eq!(applied, after.trim_end().to_string());
+    }
+
+    #[test]
+    fn handles_marker_like_content_lines() {
+        let before = "line\n@@ marker\n--- x\n+++ y\n".to_string();
+        let after = "line\n@@ marker changed\n--- x\n+++ y\n".to_string();
+        let patch = create_two_files_patch("a.txt".to_string(), "a.txt".to_string(), before.clone(), after.clone());
+        let applied = apply_patch(before, patch).expect("patch should apply");
+        assert_eq!(applied, after.trim_end().to_string());
+    }
 }

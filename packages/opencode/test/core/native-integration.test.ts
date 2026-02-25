@@ -4,16 +4,21 @@ import fs from "fs/promises"
 import path from "path"
 import { tmpdir } from "../fixture/fixture"
 import {
+  createTwoFilesPatch,
   buildDiffPatch,
   gitStatus,
   globScan,
   indexGlobalHomeDirs,
   listDirectoryProject,
   listTree,
+  replaceContent,
   readDiffSnapshot,
   readFull,
   searchIndexedPaths,
   searchContentRendered,
+  streamKill,
+  streamRead,
+  streamStart,
 } from "../../src/core/native"
 
 describe("core/native integration contracts", () => {
@@ -111,4 +116,79 @@ describe("core/native integration contracts", () => {
     expect(indexed.dirs.some((item) => item === "src/nested/")).toBe(true)
   })
 
+  test("native export surface includes diff/edit/stream functions", () => {
+    expect(typeof createTwoFilesPatch).toBe("function")
+    expect(typeof replaceContent).toBe("function")
+    expect(typeof streamStart).toBe("function")
+    expect(typeof streamRead).toBe("function")
+    expect(typeof streamKill).toBe("function")
+  })
+
+  test("streamRead yields chunks and completes with exit reason", async () => {
+    const session = streamStart({
+      command: process.execPath,
+      args: ["-e", "process.stdout.write('A'); setTimeout(() => process.stdout.write('B'), 60); setTimeout(() => process.exit(0), 120);"],
+      cwd: process.cwd(),
+      env: {},
+      timeoutMs: 2000,
+      chunkSize: 1024,
+    })
+
+    let out = ""
+    let reason = ""
+    for (let i = 0; i < 20; i++) {
+      const read = streamRead(session.id, 64, 100)
+      for (const chunk of read.chunks) {
+        out += chunk.data
+        if (chunk.isComplete) reason = chunk.completeReason || ""
+      }
+      if (read.isComplete) break
+    }
+    expect(out).toContain("A")
+    expect(out).toContain("B")
+    expect(reason).toBe("exit")
+  })
+
+  test("streamRead reports timeout reason", () => {
+    const session = streamStart({
+      command: process.execPath,
+      args: ["-e", "setTimeout(() => process.exit(0), 500)"],
+      cwd: process.cwd(),
+      env: {},
+      timeoutMs: 50,
+      chunkSize: 1024,
+    })
+
+    let reason = ""
+    for (let i = 0; i < 20; i++) {
+      const read = streamRead(session.id, 64, 100)
+      for (const chunk of read.chunks) {
+        if (chunk.isComplete) reason = chunk.completeReason || ""
+      }
+      if (read.isComplete) break
+    }
+    expect(reason).toBe("timeout")
+  })
+
+  test("streamKill reports killed reason", () => {
+    const session = streamStart({
+      command: process.execPath,
+      args: ["-e", "setInterval(() => {}, 1000)"],
+      cwd: process.cwd(),
+      env: {},
+      timeoutMs: 5000,
+      chunkSize: 1024,
+    })
+    expect(streamKill(session.id)).toBe(true)
+
+    let reason = ""
+    for (let i = 0; i < 20; i++) {
+      const read = streamRead(session.id, 64, 100)
+      for (const chunk of read.chunks) {
+        if (chunk.isComplete) reason = chunk.completeReason || ""
+      }
+      if (read.isComplete) break
+    }
+    expect(reason).toBe("killed")
+  })
 })
