@@ -187,12 +187,15 @@ declare module "@opencode-ai/core" {
     cwd: string
     env: Record<string, string>
     timeoutMs?: number
+    stdinMode?: "null" | "piped"
   }): {
     data: string
     streamType: "stdout" | "stderr"
     isComplete: boolean
     exitCode?: number
     completeReason?: "exit" | "timeout" | "killed"
+    sequence?: number
+    timestampMs?: number
   }
   export function streamStart(config: {
     command: string
@@ -201,7 +204,8 @@ declare module "@opencode-ai/core" {
     env: Record<string, string>
     timeoutMs?: number
     chunkSize?: number
-  }): { id: string }
+    stdinMode?: "null" | "piped"
+  }): { id: string; pid: number }
   export function streamRead(
     id: string,
     maxChunks?: number,
@@ -213,10 +217,13 @@ declare module "@opencode-ai/core" {
       isComplete: boolean
       exitCode?: number
       completeReason?: "exit" | "timeout" | "killed"
+      sequence?: number
+      timestampMs?: number
     }>
     isComplete: boolean
   }
   export function streamKill(id: string): boolean
+  export function streamWrite(id: string, data: string, close?: boolean): boolean
   export function parseApplyPatch(patchText: string): {
     hunks: Array<{
       hunkType: "add" | "delete" | "update"

@@ -19,6 +19,7 @@ import {
   streamKill,
   streamRead,
   streamStart,
+  streamWrite,
 } from "../../src/core/native"
 
 describe("core/native integration contracts", () => {
@@ -190,5 +191,34 @@ describe("core/native integration contracts", () => {
       if (read.isComplete) break
     }
     expect(reason).toBe("killed")
+  })
+
+  test("streamWrite sends stdin and can close stream input", () => {
+    const session = streamStart({
+      command: process.execPath,
+      args: ["-e", "process.stdin.on('data', d => process.stdout.write(String(d).toUpperCase())); process.stdin.on('end', () => process.exit(0));"],
+      cwd: process.cwd(),
+      env: {},
+      timeoutMs: 2000,
+      chunkSize: 1024,
+      stdinMode: "piped",
+    })
+
+    expect(streamWrite(session.id, "hello\n")).toBe(true)
+    expect(streamWrite(session.id, "", true)).toBe(true)
+
+    let out = ""
+    let reason = ""
+    for (let i = 0; i < 20; i++) {
+      const read = streamRead(session.id, 64, 100)
+      for (const chunk of read.chunks) {
+        out += chunk.data
+        if (chunk.isComplete) reason = chunk.completeReason || ""
+      }
+      if (read.isComplete) break
+    }
+
+    expect(out).toContain("HELLO")
+    expect(reason).toBe("exit")
   })
 })

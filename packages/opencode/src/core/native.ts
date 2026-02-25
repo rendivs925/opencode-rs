@@ -365,12 +365,15 @@ export const streamCommand = core.streamCommand as (config: {
   cwd: string
   env: Record<string, string>
   timeoutMs?: number
+  stdinMode?: "null" | "piped"
 }) => {
   data: string
   streamType: "stdout" | "stderr"
   isComplete: boolean
   exitCode?: number
   completeReason?: "exit" | "timeout" | "killed"
+  sequence?: number
+  timestampMs?: number
 }
 
 export const streamStart = core.streamStart as (config: {
@@ -380,8 +383,10 @@ export const streamStart = core.streamStart as (config: {
   env: Record<string, string>
   timeoutMs?: number
   chunkSize?: number
+  stdinMode?: "null" | "piped"
 }) => {
   id: string
+  pid: number
 }
 
 export const streamRead = core.streamRead as (
@@ -395,11 +400,14 @@ export const streamRead = core.streamRead as (
     isComplete: boolean
     exitCode?: number
     completeReason?: "exit" | "timeout" | "killed"
+    sequence?: number
+    timestampMs?: number
   }[]
   isComplete: boolean
 }
 
 export const streamKill = core.streamKill as (id: string) => boolean
+export const streamWrite = core.streamWrite as (id: string, data: string, close?: boolean) => boolean
 
 export const parseApplyPatch = core.parseApplyPatch as (patchText: string) => {
   hunks: {

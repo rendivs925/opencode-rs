@@ -75,6 +75,7 @@ module.exports = {
   streamStart: native.streamStart,
   streamRead: native.streamRead,
   streamKill: native.streamKill,
+  streamWrite: native.streamWrite,
   parseApplyPatch: native.parseApplyPatch,
   deriveNewContentsFromChunks: native.deriveNewContentsFromChunks,
   parseBashCommand: native.parseBashCommand,
