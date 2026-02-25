@@ -41,6 +41,7 @@ regex = "1"
 base64 = "0.21"
 memchr = "2"
 aho-corasick = "1"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
 [dev-dependencies]
 criterion = "0.5"
