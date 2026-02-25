@@ -179,6 +179,7 @@ declare module "@opencode-ai/core" {
     streamType: "stdout" | "stderr"
     isComplete: boolean
     exitCode?: number
+    completeReason?: "exit" | "timeout" | "killed"
   }
   export function streamStart(config: {
     command: string
@@ -191,12 +192,14 @@ declare module "@opencode-ai/core" {
   export function streamRead(
     id: string,
     maxChunks?: number,
+    waitMs?: number,
   ): {
     chunks: Array<{
       data: string
       streamType: "stdout" | "stderr"
       isComplete: boolean
       exitCode?: number
+      completeReason?: "exit" | "timeout" | "killed"
     }>
     isComplete: boolean
   }

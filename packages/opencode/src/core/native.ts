@@ -363,6 +363,7 @@ export const streamCommand = core.streamCommand as (config: {
   streamType: "stdout" | "stderr"
   isComplete: boolean
   exitCode?: number
+  completeReason?: "exit" | "timeout" | "killed"
 }
 
 export const streamStart = core.streamStart as (config: {
@@ -379,12 +380,14 @@ export const streamStart = core.streamStart as (config: {
 export const streamRead = core.streamRead as (
   id: string,
   maxChunks?: number,
+  waitMs?: number,
 ) => {
   chunks: {
     data: string
     streamType: "stdout" | "stderr"
     isComplete: boolean
     exitCode?: number
+    completeReason?: "exit" | "timeout" | "killed"
   }[]
   isComplete: boolean
 }

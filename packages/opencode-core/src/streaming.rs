@@ -11,8 +11,6 @@ use uuid::Uuid;
 struct Chunk {
     data: String,
     stream_type: String,
-    is_complete: bool,
-    exit_code: Option<i32>,
 }
 
 struct Session {
@@ -21,6 +19,7 @@ struct Session {
     complete_sent: bool,
     started: Instant,
     timeout_ms: Option<u32>,
+    reason: Option<String>,
 }
 
 #[napi(object)]
@@ -51,6 +50,7 @@ pub struct StreamChunk {
     pub stream_type: String,
     pub is_complete: bool,
     pub exit_code: Option<i32>,
+    pub complete_reason: Option<String>,
 }
 
 #[napi(object)]
@@ -89,8 +89,6 @@ fn spawn_reader<T: Read + Send + 'static>(
                     let _ = tx.send(Chunk {
                         data,
                         stream_type: stream_type.clone(),
-                        is_complete: false,
-                        exit_code: None,
                     });
                 }
                 Err(_) => break,
@@ -140,6 +138,7 @@ pub fn stream_start(config: StreamStartConfig) -> Result<StreamSession> {
                 complete_sent: false,
                 started: Instant::now(),
                 timeout_ms: config.timeout_ms,
+                reason: None,
             },
         );
 
@@ -147,7 +146,7 @@ pub fn stream_start(config: StreamStartConfig) -> Result<StreamSession> {
 }
 
 #[napi]
-pub fn stream_read(id: String, max_chunks: Option<u32>) -> Result<StreamReadResult> {
+pub fn stream_read(id: String, max_chunks: Option<u32>, wait_ms: Option<u32>) -> Result<StreamReadResult> {
     let mut store = sessions()
         .lock()
         .map_err(|_| napi::Error::from_reason("stream lock failed".to_string()))?;
@@ -158,21 +157,43 @@ pub fn stream_read(id: String, max_chunks: Option<u32>) -> Result<StreamReadResu
         });
     };
 
-    if let Some(limit) = session.timeout_ms {
-        if session.started.elapsed() >= Duration::from_millis(limit as u64) {
-            let _ = session.child.kill();
+    if session.reason.is_none() {
+        if let Some(limit) = session.timeout_ms {
+            if session.started.elapsed() >= Duration::from_millis(limit as u64) {
+                session.reason = Some("timeout".to_string());
+                let _ = session.child.kill();
+            }
         }
     }
 
     let limit = max_chunks.unwrap_or(64) as usize;
     let mut chunks = vec![];
     while chunks.len() < limit {
-        match session.rx.try_recv() {
+        let next = if chunks.is_empty() {
+            if let Some(wait) = wait_ms {
+                if wait > 0 {
+                    match session.rx.recv_timeout(Duration::from_millis(wait as u64)) {
+                        Ok(item) => Ok(item),
+                        Err(mpsc::RecvTimeoutError::Timeout) => Err(mpsc::TryRecvError::Empty),
+                        Err(mpsc::RecvTimeoutError::Disconnected) => Err(mpsc::TryRecvError::Disconnected),
+                    }
+                } else {
+                    session.rx.try_recv()
+                }
+            } else {
+                session.rx.try_recv()
+            }
+        } else {
+            session.rx.try_recv()
+        };
+
+        match next {
             Ok(item) => chunks.push(StreamChunk {
                 data: item.data,
                 stream_type: item.stream_type,
-                is_complete: item.is_complete,
-                exit_code: item.exit_code,
+                is_complete: false,
+                exit_code: None,
+                complete_reason: None,
             }),
             Err(mpsc::TryRecvError::Empty) => break,
             Err(mpsc::TryRecvError::Disconnected) => break,
@@ -186,11 +207,13 @@ pub fn stream_read(id: String, max_chunks: Option<u32>) -> Result<StreamReadResu
             .map_err(|err| napi::Error::from_reason(err.to_string()))?
         {
             session.complete_sent = true;
+            let reason = session.reason.clone().unwrap_or_else(|| "exit".to_string());
             chunks.push(StreamChunk {
                 data: String::new(),
                 stream_type: "stdout".to_string(),
                 is_complete: true,
                 exit_code: status.code(),
+                complete_reason: Some(reason),
             });
         }
     }
@@ -211,9 +234,12 @@ pub fn stream_kill(id: String) -> Result<bool> {
     let mut store = sessions()
         .lock()
         .map_err(|_| napi::Error::from_reason("stream lock failed".to_string()))?;
-    let Some(mut session) = store.remove(&id) else {
+    let Some(session) = store.get_mut(&id) else {
         return Ok(false);
     };
+    if session.reason.is_none() {
+        session.reason = Some("killed".to_string());
+    }
     let _ = session.child.kill();
     Ok(true)
 }
@@ -232,8 +258,10 @@ pub fn stream_command(config: StreamConfig) -> Result<StreamChunk> {
     let mut data = String::new();
     let mut stream_type = "stdout".to_string();
     let mut exit_code = None;
+    let mut complete_reason = None;
+
     loop {
-        let read = stream_read(session.id.clone(), Some(128))?;
+        let read = stream_read(session.id.clone(), Some(128), Some(100))?;
         for item in read.chunks {
             if !item.data.is_empty() {
                 data.push_str(&item.data);
@@ -241,12 +269,12 @@ pub fn stream_command(config: StreamConfig) -> Result<StreamChunk> {
             }
             if item.is_complete {
                 exit_code = item.exit_code;
+                complete_reason = item.complete_reason;
             }
         }
         if read.is_complete {
             break;
         }
-        thread::sleep(Duration::from_millis(10));
     }
 
     Ok(StreamChunk {
@@ -254,5 +282,6 @@ pub fn stream_command(config: StreamConfig) -> Result<StreamChunk> {
         stream_type,
         is_complete: true,
         exit_code,
+        complete_reason,
     })
 }

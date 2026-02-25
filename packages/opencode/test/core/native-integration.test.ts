@@ -110,4 +110,5 @@ describe("core/native integration contracts", () => {
     expect(indexed.dirs.some((item) => item === "src/")).toBe(true)
     expect(indexed.dirs.some((item) => item === "src/nested/")).toBe(true)
   })
+
 })

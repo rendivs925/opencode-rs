@@ -345,3 +345,41 @@ fn parse_hunk_header(line: &str) -> Result<(usize, usize)> {
 
     Ok((old_start, old_count))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn applies_multi_hunk_patch_roundtrip() {
+        let before = "a\nb\nc\nd\ne\nf\ng\n".to_string();
+        let after = "a\nb\nX\nd\ne\nY\ng\n".to_string();
+        let patch = create_two_files_patch("a.txt".to_string(), "a.txt".to_string(), before.clone(), after.clone());
+        let applied = apply_patch(before, patch).expect("patch should apply");
+        assert_eq!(applied, after.trim_end().to_string());
+    }
+
+    #[test]
+    fn fails_on_context_mismatch() {
+        let before = "a\nb\nc\n".to_string();
+        let patch = vec![
+            "--- a.txt".to_string(),
+            "+++ a.txt".to_string(),
+            "@@ -1,1 +1,1 @@".to_string(),
+            " z".to_string(),
+            "+x".to_string(),
+        ]
+        .join("\n");
+        assert!(apply_patch(before, patch).is_err());
+    }
+
+    #[test]
+    fn no_changes_patch_has_headers_only() {
+        let text = "same\ncontent\n".to_string();
+        let patch = create_two_files_patch("a.txt".to_string(), "a.txt".to_string(), text.clone(), text);
+        let lines = patch.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].starts_with("--- "));
+        assert!(lines[1].starts_with("+++ "));
+    }
+}

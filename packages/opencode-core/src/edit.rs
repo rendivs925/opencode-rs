@@ -381,3 +381,69 @@ fn apply_ranges(content: &str, ranges: &[(usize, usize)], value: &str) -> String
     out.push_str(&content[pos..]);
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replaces_single_exact_match() {
+        let out = replace_content(
+            "hello world".to_string(),
+            "world".to_string(),
+            "rust".to_string(),
+            false,
+        )
+        .expect("replace should succeed");
+        assert_eq!(out.content, "hello rust");
+        assert!(out.replaced);
+        assert!(!out.multiple_matches);
+    }
+
+    #[test]
+    fn replace_all_handles_multiple_matches() {
+        let out = replace_content("x x x".to_string(), "x".to_string(), "y".to_string(), true)
+            .expect("replace should succeed");
+        assert_eq!(out.content, "y y y");
+        assert!(out.multiple_matches);
+    }
+
+    #[test]
+    fn indentation_flexible_strategy_matches() {
+        let out = replace_content(
+            "a(\n    one,\n    two,\n)\n".to_string(),
+            "a(\none,\ntwo,\n)\n".to_string(),
+            "a(three)\n".to_string(),
+            false,
+        )
+        .expect("replace should succeed");
+        assert_eq!(out.content, "a(three)\n\n");
+    }
+
+    #[test]
+    fn errors_on_not_found() {
+        let err = replace_content(
+            "foo bar".to_string(),
+            "missing".to_string(),
+            "x".to_string(),
+            false,
+        );
+        assert!(err.is_err());
+        assert!(
+            err.err()
+                .map(|e| e.to_string().contains("Could not find oldString"))
+                .unwrap_or(false)
+        );
+    }
+
+    #[test]
+    fn errors_on_ambiguous_single_replace() {
+        let err = replace_content("hit hit".to_string(), "hit".to_string(), "x".to_string(), false);
+        assert!(err.is_err());
+        assert!(
+            err.err()
+                .map(|e| e.to_string().contains("Found multiple matches"))
+                .unwrap_or(false)
+        );
+    }
+}

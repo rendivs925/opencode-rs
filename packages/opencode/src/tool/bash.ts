@@ -17,6 +17,7 @@ import { Shell } from "@/shell/shell"
 import { BashArity } from "@/permission/arity"
 import { Truncate } from "./truncation"
 import { Plugin } from "@/plugin"
+import { streamKill, streamRead, streamStart } from "../core/native"
 
 const MAX_METADATA_LENGTH = 30_000
 const DEFAULT_TIMEOUT = Flag.OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS || 2 * 60 * 1000
@@ -50,6 +51,15 @@ const parser = lazy(async () => {
   p.setLanguage(bashLanguage)
   return p
 })
+
+function shellArgs(shell: string, command: string) {
+  if (process.platform !== "win32") return { command: shell, args: ["-lc", command] }
+  const name = path.basename(shell).toLowerCase()
+  if (name.includes("powershell") || name.includes("pwsh")) {
+    return { command: shell, args: ["-NoProfile", "-Command", command] }
+  }
+  return { command: shell, args: ["/d", "/s", "/c", command] }
+}
 
 // TODO: we may wanna rename this tool so it works better on other shells
 export const BashTool = Tool.define("bash", async () => {
@@ -169,18 +179,16 @@ export const BashTool = Tool.define("bash", async () => {
         { cwd, sessionID: ctx.sessionID, callID: ctx.callID },
         { env: {} },
       )
-      const proc = spawn(params.command, {
-        shell,
-        cwd,
-        env: {
+      const env = Object.fromEntries(
+        Object.entries({
           ...process.env,
           ...shellEnv.env,
-        },
-        stdio: ["ignore", "pipe", "pipe"],
-        detached: process.platform !== "win32",
-      })
+        }).filter((item): item is [string, string] => typeof item[1] === "string"),
+      )
 
       let output = ""
+      let exit: number | undefined
+      let reason: "exit" | "timeout" | "killed" | undefined
 
       // Initialize metadata with empty output
       ctx.metadata({
@@ -190,8 +198,8 @@ export const BashTool = Tool.define("bash", async () => {
         },
       })
 
-      const append = (chunk: Buffer) => {
-        output += chunk.toString()
+      const append = (chunk: string) => {
+        output += chunk
         ctx.metadata({
           metadata: {
             // truncate the metadata to avoid GIANT blobs of data (has nothing to do w/ what agent can access)
@@ -201,54 +209,90 @@ export const BashTool = Tool.define("bash", async () => {
         })
       }
 
-      proc.stdout?.on("data", append)
-      proc.stderr?.on("data", append)
-
-      let timedOut = false
       let aborted = false
-      let exited = false
+      if (typeof streamStart === "function" && typeof streamRead === "function" && typeof streamKill === "function") {
+        const runtime = shellArgs(shell, params.command)
+        const session = streamStart({
+          command: runtime.command,
+          args: runtime.args,
+          cwd,
+          env,
+          timeoutMs: timeout,
+          chunkSize: 64 * 1024,
+        })
 
-      const kill = () => Shell.killTree(proc, { exited: () => exited })
+        while (true) {
+          if (ctx.abort.aborted && !aborted) {
+            aborted = true
+            streamKill(session.id)
+          }
 
-      if (ctx.abort.aborted) {
-        aborted = true
-        await kill()
-      }
+          const read = streamRead(session.id, 128, 100)
+          for (const chunk of read.chunks) {
+            if (chunk.data) append(chunk.data)
+            if (chunk.isComplete) {
+              exit = chunk.exitCode
+              reason = chunk.completeReason
+            }
+          }
+          if (read.isComplete) break
+        }
+      } else {
+        const proc = spawn(params.command, {
+          shell,
+          cwd,
+          env,
+          stdio: ["ignore", "pipe", "pipe"],
+          detached: process.platform !== "win32",
+        })
+        const appendBuffer = (chunk: Buffer) => append(chunk.toString())
+        proc.stdout?.on("data", appendBuffer)
+        proc.stderr?.on("data", appendBuffer)
 
-      const abortHandler = () => {
-        aborted = true
-        void kill()
-      }
+        let exited = false
+        const kill = () => Shell.killTree(proc, { exited: () => exited })
 
-      ctx.abort.addEventListener("abort", abortHandler, { once: true })
-
-      const timeoutTimer = setTimeout(() => {
-        timedOut = true
-        void kill()
-      }, timeout + 100)
-
-      await new Promise<void>((resolve, reject) => {
-        const cleanup = () => {
-          clearTimeout(timeoutTimer)
-          ctx.abort.removeEventListener("abort", abortHandler)
+        if (ctx.abort.aborted) {
+          aborted = true
+          await kill()
         }
 
-        proc.once("exit", () => {
-          exited = true
-          cleanup()
-          resolve()
-        })
+        const abortHandler = () => {
+          aborted = true
+          void kill()
+        }
 
-        proc.once("error", (error) => {
-          exited = true
-          cleanup()
-          reject(error)
+        ctx.abort.addEventListener("abort", abortHandler, { once: true })
+
+        const timeoutTimer = setTimeout(() => {
+          reason = "timeout"
+          void kill()
+        }, timeout + 100)
+
+        await new Promise<void>((resolve, reject) => {
+          const cleanup = () => {
+            clearTimeout(timeoutTimer)
+            ctx.abort.removeEventListener("abort", abortHandler)
+          }
+
+          proc.once("exit", (code) => {
+            exited = true
+            cleanup()
+            exit = code ?? undefined
+            resolve()
+          })
+
+          proc.once("error", (error) => {
+            exited = true
+            cleanup()
+            reject(error)
+          })
         })
-      })
+      }
 
       const resultMetadata: string[] = []
 
-      if (timedOut) {
+      if (reason === "timeout") {
         resultMetadata.push(`bash tool terminated command after exceeding timeout ${timeout} ms`)
       }
 
@@ -264,7 +308,7 @@ export const BashTool = Tool.define("bash", async () => {
         title: params.description,
         metadata: {
           output: output.length > MAX_METADATA_LENGTH ? output.slice(0, MAX_METADATA_LENGTH) + "\n\n..." : output,
-          exit: proc.exitCode,
+          exit,
           description: params.description,
         },
         output,
