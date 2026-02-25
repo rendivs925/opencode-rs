@@ -51,10 +51,13 @@ pub fn levenshtein_distance(a: String, b: String) -> u32 {
         return a.chars().count() as u32;
     }
 
+    if a.is_ascii() && b.is_ascii() {
+        return levenshtein_ascii_simd(a.as_bytes(), b.as_bytes()) as u32;
+    }
+
     let a = a.chars().collect::<Vec<_>>();
     let b = b.chars().collect::<Vec<_>>();
     let mut row = (0..=b.len()).collect::<Vec<_>>();
-
     for (i, ca) in a.iter().enumerate() {
         let mut prev = row[0];
         row[0] = i + 1;
@@ -67,6 +70,206 @@ pub fn levenshtein_distance(a: String, b: String) -> u32 {
     }
 
     row[b.len()] as u32
+}
+
+fn levenshtein_ascii_simd(a: &[u8], b: &[u8]) -> usize {
+    let (mut a, mut b) = trim_common_affixes(a, b);
+    if a.is_empty() {
+        return b.len();
+    }
+    if b.is_empty() {
+        return a.len();
+    }
+    if b.len() > a.len() {
+        std::mem::swap(&mut a, &mut b);
+    }
+
+    let mut row = (0..=b.len()).collect::<Vec<_>>();
+    for (i, &ca) in a.iter().enumerate() {
+        let mut prev = row[0];
+        row[0] = i + 1;
+        for (j, &cb) in b.iter().enumerate() {
+            let old = row[j + 1];
+            let cost = usize::from(ca != cb);
+            row[j + 1] = (row[j + 1] + 1).min(row[j] + 1).min(prev + cost);
+            prev = old;
+        }
+    }
+    row[b.len()]
+}
+
+fn trim_common_affixes<'a>(a: &'a [u8], b: &'a [u8]) -> (&'a [u8], &'a [u8]) {
+    let max = a.len().min(b.len());
+    let prefix = common_prefix_len(a, b, max);
+    let remain = (a.len() - prefix).min(b.len() - prefix);
+    let suffix = common_suffix_len(a, b, remain, prefix);
+    (&a[prefix..a.len() - suffix], &b[prefix..b.len() - suffix])
+}
+
+fn common_prefix_len(a: &[u8], b: &[u8], max: usize) -> usize {
+    let mut i = if cfg!(target_arch = "x86_64") && is_avx2_available() {
+        // SAFETY: runtime AVX2-gated and x86_64-only implementation.
+        unsafe { common_prefix_avx2(a, b, max) }
+    } else if cfg!(target_arch = "aarch64") && is_neon_available() {
+        // SAFETY: runtime NEON-gated and aarch64-only implementation.
+        unsafe { common_prefix_neon(a, b, max) }
+    } else {
+        0
+    };
+    while i < max && a[i] == b[i] {
+        i += 1;
+    }
+    i
+}
+
+fn common_suffix_len(a: &[u8], b: &[u8], max: usize, prefix: usize) -> usize {
+    let mut i = if cfg!(target_arch = "x86_64") && is_avx2_available() {
+        // SAFETY: runtime AVX2-gated and x86_64-only implementation.
+        unsafe { common_suffix_avx2(a, b, max) }
+    } else if cfg!(target_arch = "aarch64") && is_neon_available() {
+        // SAFETY: runtime NEON-gated and aarch64-only implementation.
+        unsafe { common_suffix_neon(a, b, max) }
+    } else {
+        0
+    };
+    while i < max
+        && a.len().saturating_sub(1 + i) >= prefix
+        && b.len().saturating_sub(1 + i) >= prefix
+        && a[a.len() - 1 - i] == b[b.len() - 1 - i]
+    {
+        i += 1;
+    }
+    i
+}
+
+#[inline]
+fn is_avx2_available() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        std::arch::is_x86_feature_detected!("avx2")
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        false
+    }
+}
+
+#[inline]
+fn is_neon_available() -> bool {
+    #[cfg(target_arch = "aarch64")]
+    {
+        std::arch::is_aarch64_feature_detected!("neon")
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        false
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn common_prefix_avx2(a: &[u8], b: &[u8], max: usize) -> usize {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    while i + 32 <= max {
+        let va = _mm256_loadu_si256(a.as_ptr().add(i) as *const __m256i);
+        let vb = _mm256_loadu_si256(b.as_ptr().add(i) as *const __m256i);
+        let eq = _mm256_cmpeq_epi8(va, vb);
+        let mask = _mm256_movemask_epi8(eq) as u32;
+        if mask == u32::MAX {
+            i += 32;
+            continue;
+        }
+        return i + (!mask).trailing_zeros() as usize;
+    }
+    i
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+unsafe fn common_prefix_avx2(_a: &[u8], _b: &[u8], _max: usize) -> usize {
+    0
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn common_prefix_neon(a: &[u8], b: &[u8], max: usize) -> usize {
+    use std::arch::aarch64::*;
+    let mut i = 0usize;
+    while i + 16 <= max {
+        let va = vld1q_u8(a.as_ptr().add(i));
+        let vb = vld1q_u8(b.as_ptr().add(i));
+        let eq = vceqq_u8(va, vb);
+        let mut tmp = [0u8; 16];
+        vst1q_u8(tmp.as_mut_ptr(), eq);
+        if tmp.iter().all(|item| *item == 0xff) {
+            i += 16;
+            continue;
+        }
+        if let Some(pos) = tmp.iter().position(|item| *item != 0xff) {
+            return i + pos;
+        }
+    }
+    i
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+unsafe fn common_prefix_neon(_a: &[u8], _b: &[u8], _max: usize) -> usize {
+    0
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn common_suffix_avx2(a: &[u8], b: &[u8], max: usize) -> usize {
+    use std::arch::x86_64::*;
+    let mut i = 0usize;
+    while i + 32 <= max {
+        let start_a = a.len() - (i + 32);
+        let start_b = b.len() - (i + 32);
+        let va = _mm256_loadu_si256(a.as_ptr().add(start_a) as *const __m256i);
+        let vb = _mm256_loadu_si256(b.as_ptr().add(start_b) as *const __m256i);
+        let eq = _mm256_cmpeq_epi8(va, vb);
+        let mask = _mm256_movemask_epi8(eq) as u32;
+        if mask == u32::MAX {
+            i += 32;
+            continue;
+        }
+        return i + (!mask).leading_zeros() as usize;
+    }
+    i
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+unsafe fn common_suffix_avx2(_a: &[u8], _b: &[u8], _max: usize) -> usize {
+    0
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn common_suffix_neon(a: &[u8], b: &[u8], max: usize) -> usize {
+    use std::arch::aarch64::*;
+    let mut i = 0usize;
+    while i + 16 <= max {
+        let start_a = a.len() - (i + 16);
+        let start_b = b.len() - (i + 16);
+        let va = vld1q_u8(a.as_ptr().add(start_a));
+        let vb = vld1q_u8(b.as_ptr().add(start_b));
+        let eq = vceqq_u8(va, vb);
+        let mut tmp = [0u8; 16];
+        vst1q_u8(tmp.as_mut_ptr(), eq);
+        if tmp.iter().all(|item| *item == 0xff) {
+            i += 16;
+            continue;
+        }
+        if let Some(pos) = tmp.iter().rposition(|item| *item != 0xff) {
+            return i + (15 - pos);
+        }
+    }
+    i
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+unsafe fn common_suffix_neon(_a: &[u8], _b: &[u8], _max: usize) -> usize {
+    0
 }
 
 #[napi]
@@ -507,5 +710,24 @@ mod tests {
         let find = "A\n\nB\n";
         let matches = find_context_aware(content, find);
         assert_eq!(matches, vec![(0, 4), (5, 9)]);
+    }
+
+    #[test]
+    fn levenshtein_ascii_examples() {
+        assert_eq!(levenshtein_distance("kitten".to_string(), "sitting".to_string()), 3);
+        assert_eq!(levenshtein_distance("flaw".to_string(), "lawn".to_string()), 2);
+    }
+
+    #[test]
+    fn levenshtein_unicode_fallback() {
+        assert_eq!(levenshtein_distance("résumé".to_string(), "resume".to_string()), 2);
+        assert_eq!(levenshtein_distance("你好世界".to_string(), "你们世界".to_string()), 1);
+    }
+
+    #[test]
+    fn levenshtein_trims_shared_prefix_suffix() {
+        let left = format!("{}x{}", "a".repeat(512), "b".repeat(512));
+        let right = format!("{}y{}", "a".repeat(512), "b".repeat(512));
+        assert_eq!(levenshtein_distance(left, right), 1);
     }
 }
