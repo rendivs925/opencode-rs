@@ -394,7 +394,7 @@ export function Prompt(props: PromptProps) {
 
   function restoreExtmarksFromParts(parts: PromptInfo["parts"]) {
     input.extmarks.clear()
-    setStore("extmarkToPartIndex", new Map())
+    const map = new Map<number, number>()
 
     parts.forEach((part, partIndex) => {
       let start = 0
@@ -427,17 +427,24 @@ export function Prompt(props: PromptProps) {
           styleId,
           typeId: promptPartTypeId,
         })
-        setStore("extmarkToPartIndex", (map: Map<number, number>) => {
-          const newMap = new Map(map)
-          newMap.set(extmarkId, partIndex)
-          return newMap
-        })
+        map.set(extmarkId, partIndex)
       }
     })
+    setStore("extmarkToPartIndex", map)
   }
 
   function syncExtmarksWithPromptParts() {
     const allExtmarks = input.extmarks.getAllForTypeId(promptPartTypeId)
+    if (!allExtmarks.length) {
+      if (store.prompt.parts.length === 0 && store.extmarkToPartIndex.size === 0) return
+      setStore(
+        produce((draft) => {
+          draft.extmarkToPartIndex = new Map()
+          draft.prompt.parts = []
+        }),
+      )
+      return
+    }
     setStore(
       produce((draft) => {
         const newMap = new Map<number, number>()
@@ -469,6 +476,19 @@ export function Prompt(props: PromptProps) {
       }),
     )
   }
+
+  let extmarkSyncTimer: Timer | undefined
+  function scheduleExtmarkSync() {
+    if (extmarkSyncTimer) return
+    extmarkSyncTimer = setTimeout(() => {
+      extmarkSyncTimer = undefined
+      syncExtmarksWithPromptParts()
+    }, 16)
+  }
+
+  onCleanup(() => {
+    if (extmarkSyncTimer) clearTimeout(extmarkSyncTimer)
+  })
 
   command.register(() => [
     {
@@ -828,7 +848,7 @@ export function Prompt(props: PromptProps) {
                 const value = input.plainText
                 setStore("prompt", "input", value)
                 autocomplete.onInput(value)
-                syncExtmarksWithPromptParts()
+                scheduleExtmarkSync()
               }}
               keyBindings={textareaKeybindings()}
               onKeyDown={async (e) => {

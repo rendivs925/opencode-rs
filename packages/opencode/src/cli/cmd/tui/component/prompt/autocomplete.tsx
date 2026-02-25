@@ -100,7 +100,7 @@ export function Autocomplete(props: {
           lastPos = { x: anchor.x, y: anchor.y, width: anchor.width }
           setPositionTick((t) => t + 1)
         }
-      }, 50)
+      }, 120)
 
       onCleanup(() => clearInterval(interval))
     }
@@ -138,6 +138,17 @@ export function Autocomplete(props: {
   createEffect(() => {
     const next = filter()
     setSearch(next ? next : "")
+  })
+
+  const [debouncedSearch, setDebouncedSearch] = createSignal("")
+  createEffect(() => {
+    const current = search()
+    const timer = setTimeout(() => {
+      setDebouncedSearch(current)
+    }, 100)
+    onCleanup(() => {
+      clearTimeout(timer)
+    })
   })
 
   // When the filter changes due to how TUI works, the mousemove might still be triggered
@@ -218,17 +229,21 @@ export function Autocomplete(props: {
     }
   }
 
+  let fileQuery = 0
   const [files] = createResource(
-    () => search(),
+    () => debouncedSearch(),
     async (query) => {
       if (!store.visible || store.visible === "/") return []
 
       const { lineRange, baseQuery } = extractLineRange(query ?? "")
+      if (!baseQuery.trim()) return []
+      const id = ++fileQuery
 
       // Get files from SDK
       const result = await sdk.client.find.files({
         query: baseQuery,
       })
+      if (id !== fileQuery) return []
 
       const options: AutocompleteOption[] = []
 

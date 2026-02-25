@@ -35,7 +35,28 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
 
     const flush = () => {
       if (queue.length === 0) return
-      const events = queue
+      const events = queue.reduce<Event[]>((result, event) => {
+        const last = result.at(-1)
+        if (
+          last &&
+          last.type === "message.part.delta" &&
+          event.type === "message.part.delta" &&
+          last.properties.messageID === event.properties.messageID &&
+          last.properties.partID === event.properties.partID &&
+          last.properties.field === event.properties.field
+        ) {
+          result[result.length - 1] = {
+            ...last,
+            properties: {
+              ...last.properties,
+              delta: last.properties.delta + event.properties.delta,
+            },
+          }
+          return result
+        }
+        result.push(event)
+        return result
+      }, [])
       queue = []
       timer = undefined
       last = Date.now()

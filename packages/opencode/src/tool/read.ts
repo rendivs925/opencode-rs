@@ -100,8 +100,6 @@ export const ReadTool = Tool.define("read", {
       }
     }
 
-    const instructions = await InstructionPrompt.resolve(ctx.messages, filepath, ctx.messageID)
-
     const mode = classifyReadTarget(filepath, filepath)
     if (mode.exists && mode.mode === "binary") {
       throw new Error(`Cannot read binary file: ${filepath}`)
@@ -116,7 +114,7 @@ export const ReadTool = Tool.define("read", {
         metadata: {
           preview: msg,
           truncated: false,
-          loaded: instructions.map((i) => i.filepath),
+          loaded: [],
         },
         attachments: [
           {
@@ -127,6 +125,7 @@ export const ReadTool = Tool.define("read", {
         ],
       }
     }
+    const instructions = await InstructionPrompt.resolve(ctx.messages, filepath, ctx.messageID)
 
     const limit = params.limit ?? DEFAULT_READ_LIMIT
     const offset = params.offset ?? 1

@@ -292,20 +292,27 @@ pub fn list_files_sorted(
     max_depth: Option<i32>,
     limit: Option<i32>,
 ) -> Result<FileListSortedResult> {
+    fn cmp_file(a: &(PathBuf, i64), b: &(PathBuf, i64)) -> Ordering {
+        b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0))
+    }
+
     let root = Path::new(&search_path);
     let hidden = include_hidden.unwrap_or(true);
     let follow = follow_links.unwrap_or(false);
     let depth = max_depth.map(|d| d.max(0) as usize);
     let has_errors = AtomicBool::new(false);
     let mut files = collect_files(root, globs.as_ref(), hidden, follow, depth, &has_errors)?;
-    files.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     let total = files.len() as i32;
     if let Some(max) = limit {
         let max = max.max(0) as usize;
-        if files.len() > max {
+        if max == 0 {
+            files.clear();
+        } else if files.len() > max {
+            files.select_nth_unstable_by(max, cmp_file);
             files.truncate(max);
         }
     }
+    files.sort_by(cmp_file);
     let files = files
         .into_iter()
         .map(|(p, m)| FileStat {
