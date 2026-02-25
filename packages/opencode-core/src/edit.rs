@@ -1,4 +1,6 @@
+use aho_corasick::AhoCorasickBuilder;
 use napi::Result;
+use rayon::prelude::*;
 use regex::Regex;
 
 const MULTIPLE_MATCHES_ERROR: &str =
@@ -154,15 +156,12 @@ fn find_exact(content: &str, find: &str) -> Vec<(usize, usize)> {
     if find.is_empty() {
         return vec![];
     }
-    let mut out = vec![];
-    let mut pos = 0usize;
-    while let Some(idx) = content[pos..].find(find) {
-        let start = pos + idx;
-        let end = start + find.len();
-        out.push((start, end));
-        pos = end;
-    }
-    out
+    let ac = AhoCorasickBuilder::new()
+        .build([find])
+        .expect("single-pattern automaton should build");
+    ac.find_iter(content)
+        .map(|item| (item.start(), item.end()))
+        .collect()
 }
 
 fn build_lines(content: &str) -> Vec<(usize, usize, &str)> {
@@ -338,32 +337,35 @@ fn find_context_aware(content: &str, find: &str) -> Vec<(usize, usize)> {
     }
     let first = target[0].trim();
     let last = target[target.len() - 1].trim();
-    let mut out = vec![];
-
-    for i in 0..rows.len() {
-        if rows[i].2.trim() != first {
-            continue;
-        }
-        for j in i + 2..rows.len() {
-            if rows[j].2.trim() != last {
-                continue;
+    let mut out = (0..rows.len())
+        .into_par_iter()
+        .filter_map(|i| {
+            if rows[i].2.trim() != first {
+                return None;
             }
-            let block = &rows[i..=j];
-            if block.len() != target.len() {
-                continue;
-            }
-            let score = (1..block.len() - 1)
-                .filter(|k| block[*k].2.trim() == target[*k].trim())
-                .count();
-            let total = (1..block.len() - 1)
-                .filter(|k| !block[*k].2.trim().is_empty() || !target[*k].trim().is_empty())
-                .count();
-            if total == 0 || score as f32 / total as f32 >= 0.5 {
-                out.push((rows[i].0, rows[j].1));
-                break;
-            }
-        }
-    }
+            (i + 2..rows.len()).find_map(|j| {
+                if rows[j].2.trim() != last {
+                    return None;
+                }
+                let block = &rows[i..=j];
+                if block.len() != target.len() {
+                    return None;
+                }
+                let score = (1..block.len() - 1)
+                    .filter(|k| block[*k].2.trim() == target[*k].trim())
+                    .count();
+                let total = (1..block.len() - 1)
+                    .filter(|k| !block[*k].2.trim().is_empty() || !target[*k].trim().is_empty())
+                    .count();
+                if total == 0 || score as f32 / total as f32 >= 0.5 {
+                    Some((rows[i].0, rows[j].1))
+                } else {
+                    None
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    out.sort_by_key(|item| item.0);
     out
 }
 
@@ -445,5 +447,19 @@ mod tests {
                 .map(|e| e.to_string().contains("Found multiple matches"))
                 .unwrap_or(false)
         );
+    }
+
+    #[test]
+    fn exact_search_returns_non_overlapping_matches() {
+        let matches = find_exact("ababa", "aba");
+        assert_eq!(matches, vec![(0, 3)]);
+    }
+
+    #[test]
+    fn context_aware_order_is_stable() {
+        let content = "A\n\nB\nA\n\nB\n";
+        let find = "A\n\nB\n";
+        let matches = find_context_aware(content, find);
+        assert_eq!(matches, vec![(0, 4), (5, 9)]);
     }
 }
