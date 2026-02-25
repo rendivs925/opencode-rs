@@ -5,10 +5,12 @@ use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const BPE_CACHE_LIMIT: usize = 32;
 
-static BPE_CACHE: OnceLock<DashMap<String, Arc<tiktoken_rs::CoreBPE>>> = OnceLock::new();
+static BPE_CACHE: OnceLock<DashMap<String, (Arc<tiktoken_rs::CoreBPE>, u64)>> = OnceLock::new();
+static BPE_CACHE_TICK: AtomicU64 = AtomicU64::new(1);
 
 #[napi]
 pub fn count_tokens(path: String, encoding: String) -> Result<i32> {
@@ -67,8 +69,10 @@ pub fn count_tokens_streaming(path: String, encoding: String, chunk_size: i32) -
 
 fn bpe_for(encoding: &str) -> Result<Arc<tiktoken_rs::CoreBPE>> {
     let cache = BPE_CACHE.get_or_init(DashMap::new);
-    if let Some(item) = cache.get(encoding) {
-        return Ok(Arc::clone(item.value()));
+    if let Some(mut item) = cache.get_mut(encoding) {
+        let (bpe, used) = item.value_mut();
+        *used = BPE_CACHE_TICK.fetch_add(1, Ordering::Relaxed);
+        return Ok(Arc::clone(bpe));
     }
 
     let bpe = Arc::new(
@@ -83,11 +87,15 @@ fn bpe_for(encoding: &str) -> Result<Arc<tiktoken_rs::CoreBPE>> {
     );
 
     if cache.len() >= BPE_CACHE_LIMIT {
-        if let Some(first) = cache.iter().next() {
+        if let Some(first) = cache.iter().min_by_key(|item| item.value().1) {
             let key = first.key().clone();
+            drop(first);
             cache.remove(&key);
         }
     }
-    cache.insert(encoding.to_string(), Arc::clone(&bpe));
+    cache.insert(
+        encoding.to_string(),
+        (Arc::clone(&bpe), BPE_CACHE_TICK.fetch_add(1, Ordering::Relaxed)),
+    );
     Ok(bpe)
 }

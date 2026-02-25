@@ -4,6 +4,7 @@ use napi::Result;
 use rayon::prelude::*;
 use regex::Regex;
 use std::sync::{Arc, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const MULTIPLE_MATCHES_ERROR: &str =
     "Found multiple matches for oldString. Provide more surrounding context to make the match unique.";
@@ -11,8 +12,9 @@ const NOT_FOUND_ERROR: &str =
     "Could not find oldString in the file. It must match exactly, including whitespace, indentation, and line endings.";
 const CACHE_LIMIT: usize = 256;
 
-static AC_CACHE: OnceLock<DashMap<String, Arc<aho_corasick::AhoCorasick>>> = OnceLock::new();
-static REGEX_CACHE: OnceLock<DashMap<String, Arc<Regex>>> = OnceLock::new();
+static AC_CACHE: OnceLock<DashMap<String, (Arc<aho_corasick::AhoCorasick>, u64)>> = OnceLock::new();
+static REGEX_CACHE: OnceLock<DashMap<String, (Arc<Regex>, u64)>> = OnceLock::new();
+static CACHE_TICK: AtomicU64 = AtomicU64::new(1);
 
 #[napi(string_enum)]
 pub enum ReplaceStrategy {
@@ -470,17 +472,23 @@ fn find_whitespace_normalized(content: &str, find: &str) -> Vec<(usize, usize)> 
     out
 }
 
-fn ac_cache() -> &'static DashMap<String, Arc<aho_corasick::AhoCorasick>> {
+fn tick() -> u64 {
+    CACHE_TICK.fetch_add(1, Ordering::Relaxed)
+}
+
+fn ac_cache() -> &'static DashMap<String, (Arc<aho_corasick::AhoCorasick>, u64)> {
     AC_CACHE.get_or_init(DashMap::new)
 }
 
-fn regex_cache() -> &'static DashMap<String, Arc<Regex>> {
+fn regex_cache() -> &'static DashMap<String, (Arc<Regex>, u64)> {
     REGEX_CACHE.get_or_init(DashMap::new)
 }
 
 fn cached_ac(pattern: &str) -> Arc<aho_corasick::AhoCorasick> {
-    if let Some(item) = ac_cache().get(pattern) {
-        return Arc::clone(item.value());
+    if let Some(mut item) = ac_cache().get_mut(pattern) {
+        let (ac, used) = item.value_mut();
+        *used = tick();
+        return Arc::clone(ac);
     }
     let ac = Arc::new(
         AhoCorasickBuilder::new()
@@ -488,22 +496,42 @@ fn cached_ac(pattern: &str) -> Arc<aho_corasick::AhoCorasick> {
         .expect("single-pattern automaton should build"),
     );
     if ac_cache().len() >= CACHE_LIMIT {
-        ac_cache().clear();
+        evict_lru_ac();
     }
-    ac_cache().insert(pattern.to_string(), Arc::clone(&ac));
+    ac_cache().insert(pattern.to_string(), (Arc::clone(&ac), tick()));
     ac
 }
 
 fn cached_regex(pattern: &str) -> Arc<Regex> {
-    if let Some(item) = regex_cache().get(pattern) {
-        return Arc::clone(item.value());
+    if let Some(mut item) = regex_cache().get_mut(pattern) {
+        let (re, used) = item.value_mut();
+        *used = tick();
+        return Arc::clone(re);
     }
     let re = Arc::new(Regex::new(pattern).expect("escaped whitespace regex should compile"));
     if regex_cache().len() >= CACHE_LIMIT {
-        regex_cache().clear();
+        evict_lru_regex();
     }
-    regex_cache().insert(pattern.to_string(), Arc::clone(&re));
+    regex_cache().insert(pattern.to_string(), (Arc::clone(&re), tick()));
     re
+}
+
+fn evict_lru_ac() {
+    let cache = ac_cache();
+    if let Some(item) = cache.iter().min_by_key(|item| item.value().1) {
+        let key = item.key().clone();
+        drop(item);
+        cache.remove(&key);
+    }
+}
+
+fn evict_lru_regex() {
+    let cache = regex_cache();
+    if let Some(item) = cache.iter().min_by_key(|item| item.value().1) {
+        let key = item.key().clone();
+        drop(item);
+        cache.remove(&key);
+    }
 }
 
 fn unindent(value: &str) -> String {

@@ -5,6 +5,10 @@ use napi::Result;
 use rayon::prelude::*;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+const CACHE_LIMIT: usize = 512;
+static CACHE_TICK: AtomicU64 = AtomicU64::new(1);
 
 #[napi]
 pub fn is_ignored(path: String, patterns: Vec<String>) -> Result<bool> {
@@ -124,12 +128,17 @@ fn key(parts: &[String]) -> String {
 fn cached_matcher(patterns: &[String]) -> Result<Arc<Gitignore>> {
     let cache = IGNORE_CACHE.get_or_init(DashMap::new);
     let k = key(patterns);
-    if let Some(item) = cache.get(&k) {
-        return Ok(Arc::clone(item.value()));
+    if let Some(mut item) = cache.get_mut(&k) {
+        let (matcher, used) = item.value_mut();
+        *used = CACHE_TICK.fetch_add(1, Ordering::Relaxed);
+        return Ok(Arc::clone(matcher));
     }
 
     let built = Arc::new(build_matcher(patterns)?);
-    cache.insert(k, Arc::clone(&built));
+    if cache.len() >= CACHE_LIMIT {
+        evict_lru_ignore(cache);
+    }
+    cache.insert(k, (Arc::clone(&built), CACHE_TICK.fetch_add(1, Ordering::Relaxed)));
     Ok(built)
 }
 
@@ -143,8 +152,10 @@ fn cached_globset(patterns: Option<&Vec<String>>) -> Result<Arc<GlobSet>> {
 
     let cache = GLOB_CACHE.get_or_init(DashMap::new);
     let k = key(patterns);
-    if let Some(item) = cache.get(&k) {
-        return Ok(Arc::clone(item.value()));
+    if let Some(mut item) = cache.get_mut(&k) {
+        let (set, used) = item.value_mut();
+        *used = CACHE_TICK.fetch_add(1, Ordering::Relaxed);
+        return Ok(Arc::clone(set));
     }
 
     let mut builder = GlobSetBuilder::new();
@@ -153,7 +164,10 @@ fn cached_globset(patterns: Option<&Vec<String>>) -> Result<Arc<GlobSet>> {
         builder.add(glob);
     }
     let set = Arc::new(builder.build().map_err(|e| napi::Error::from_reason(e.to_string()))?);
-    cache.insert(k, Arc::clone(&set));
+    if cache.len() >= CACHE_LIMIT {
+        evict_lru_glob(cache);
+    }
+    cache.insert(k, (Arc::clone(&set), CACHE_TICK.fetch_add(1, Ordering::Relaxed)));
     Ok(set)
 }
 
@@ -165,5 +179,21 @@ fn is_whitelisted(path: &str, patterns: Option<&Vec<String>>) -> Result<bool> {
     Ok(set.is_match(path))
 }
 
-static IGNORE_CACHE: OnceLock<DashMap<String, Arc<Gitignore>>> = OnceLock::new();
-static GLOB_CACHE: OnceLock<DashMap<String, Arc<GlobSet>>> = OnceLock::new();
+fn evict_lru_ignore(cache: &DashMap<String, (Arc<Gitignore>, u64)>) {
+    if let Some(item) = cache.iter().min_by_key(|item| item.value().1) {
+        let key = item.key().clone();
+        drop(item);
+        cache.remove(&key);
+    }
+}
+
+fn evict_lru_glob(cache: &DashMap<String, (Arc<GlobSet>, u64)>) {
+    if let Some(item) = cache.iter().min_by_key(|item| item.value().1) {
+        let key = item.key().clone();
+        drop(item);
+        cache.remove(&key);
+    }
+}
+
+static IGNORE_CACHE: OnceLock<DashMap<String, (Arc<Gitignore>, u64)>> = OnceLock::new();
+static GLOB_CACHE: OnceLock<DashMap<String, (Arc<GlobSet>, u64)>> = OnceLock::new();

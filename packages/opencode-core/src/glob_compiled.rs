@@ -5,10 +5,12 @@ use napi::Result;
 use rayon::prelude::*;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const CACHE_LIMIT: usize = 256;
 
-static GLOB_CACHE: OnceLock<DashMap<String, Arc<GlobMatcher>>> = OnceLock::new();
+static GLOB_CACHE: OnceLock<DashMap<String, (Arc<GlobMatcher>, u64)>> = OnceLock::new();
+static CACHE_TICK: AtomicU64 = AtomicU64::new(1);
 
 #[napi]
 pub fn glob_match_compiled(pattern: String, filepath: String) -> Result<bool> {
@@ -116,8 +118,10 @@ pub fn glob_compiled_cache_clear() {
 
 fn compiled_matcher(pattern: &str) -> Result<Arc<GlobMatcher>> {
     let cache = GLOB_CACHE.get_or_init(DashMap::new);
-    if let Some(item) = cache.get(pattern) {
-        return Ok(Arc::clone(item.value()));
+    if let Some(mut item) = cache.get_mut(pattern) {
+        let (matcher, used) = item.value_mut();
+        *used = CACHE_TICK.fetch_add(1, Ordering::Relaxed);
+        return Ok(Arc::clone(matcher));
     }
 
     let matcher = Arc::new(
@@ -128,11 +132,15 @@ fn compiled_matcher(pattern: &str) -> Result<Arc<GlobMatcher>> {
             .compile_matcher(),
     );
     if cache.len() >= CACHE_LIMIT {
-        if let Some(first) = cache.iter().next() {
+        if let Some(first) = cache.iter().min_by_key(|item| item.value().1) {
             let key = first.key().clone();
+            drop(first);
             cache.remove(&key);
         }
     }
-    cache.insert(pattern.to_string(), Arc::clone(&matcher));
+    cache.insert(
+        pattern.to_string(),
+        (Arc::clone(&matcher), CACHE_TICK.fetch_add(1, Ordering::Relaxed)),
+    );
     Ok(matcher)
 }

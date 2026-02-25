@@ -2,10 +2,13 @@ use napi::Result;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::Stdio;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::process::{Child as TokioChild, ChildStdin as TokioChildStdin, Command as TokioCommand};
+use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -18,13 +21,13 @@ struct Chunk {
 }
 
 enum ProcessHandle {
-    Pipe(Child),
+    AsyncPipe(TokioChild),
     Pty(Box<dyn portable_pty::Child + Send>),
 }
 
 struct Session {
     process: ProcessHandle,
-    stdin_pipe: Option<ChildStdin>,
+    stdin_pipe: Option<TokioChildStdin>,
     pty_writer: Option<Box<dyn Write + Send>>,
     rx: mpsc::Receiver<Chunk>,
     complete_sent: bool,
@@ -86,9 +89,21 @@ pub struct StreamReadResult {
 }
 
 static SESSIONS: OnceLock<Mutex<HashMap<String, Session>>> = OnceLock::new();
+static RUNTIME: OnceLock<Runtime> = OnceLock::new();
 
 fn sessions() -> &'static Mutex<HashMap<String, Session>> {
     SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn runtime() -> &'static Runtime {
+    RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_io()
+            .enable_time()
+            .build()
+            .expect("tokio runtime init failed")
+    })
 }
 
 fn spawn_reader<T: Read + Send + 'static>(
@@ -113,6 +128,43 @@ fn spawn_reader<T: Read + Send + 'static>(
                         sequence,
                         timestamp_ms: now_ms(),
                     });
+                    sequence = sequence.saturating_add(2);
+                }
+                Err(_) => break,
+            }
+        }
+    });
+}
+
+fn spawn_async_reader<T>(
+    mut reader: T,
+    tx: mpsc::Sender<Chunk>,
+    stream_type: &str,
+    chunk_size: usize,
+    sequence_base: u64,
+) where
+    T: AsyncRead + Unpin + Send + 'static,
+{
+    let stream_type = stream_type.to_string();
+    runtime().spawn(async move {
+        let mut buf = vec![0u8; chunk_size.max(1024)];
+        let mut sequence = sequence_base;
+        loop {
+            match reader.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    if tx
+                        .send(Chunk {
+                            data: String::from_utf8_lossy(&buf[..n]).to_string(),
+                            stream_type: stream_type.clone(),
+                            sequence,
+                            timestamp_ms: now_ms(),
+                        })
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
                     sequence = sequence.saturating_add(2);
                 }
                 Err(_) => break,
@@ -284,12 +336,17 @@ pub fn stream_write(id: String, data: String, close: Option<bool>) -> Result<boo
     }
     if let Some(stdin) = session.stdin_pipe.as_mut() {
         if !data.is_empty() {
-            stdin
-                .write_all(data.as_bytes())
-                .map_err(|err| napi::Error::from_reason(err.to_string()))?;
-            stdin
-                .flush()
-                .map_err(|err| napi::Error::from_reason(err.to_string()))?;
+            runtime()
+                .block_on(async {
+                    stdin
+                        .write_all(data.as_bytes())
+                        .await
+                        .map_err(|err| napi::Error::from_reason(err.to_string()))?;
+                    stdin
+                        .flush()
+                        .await
+                        .map_err(|err| napi::Error::from_reason(err.to_string()))
+                })?;
         }
         if close.unwrap_or(false) {
             session.stdin_pipe = None;
@@ -371,8 +428,8 @@ fn spawn_direct(
     config: &StreamStartConfig,
     tx: mpsc::Sender<Chunk>,
     chunk_size: usize,
-) -> Result<(u32, ProcessHandle, Option<ChildStdin>, Option<Box<dyn Write + Send>>, u64)> {
-    let mut cmd = Command::new(&config.command);
+) -> Result<(u32, ProcessHandle, Option<TokioChildStdin>, Option<Box<dyn Write + Send>>, u64)> {
+    let mut cmd = TokioCommand::new(&config.command);
     cmd.args(&config.args)
         .current_dir(&config.cwd)
         .stdout(Stdio::piped())
@@ -381,11 +438,8 @@ fn spawn_direct(
     for (k, v) in &config.env {
         cmd.env(k, v);
     }
-    let mut child = cmd
-        .spawn()
-        .map_err(|err| napi::Error::from_reason(err.to_string()))
-        ?;
-    let pid = child.id();
+    let mut child = cmd.spawn().map_err(|err| napi::Error::from_reason(err.to_string()))?;
+    let pid = child.id().unwrap_or(0);
     let stdin_pipe = child.stdin.take();
     let stdout = child
         .stdout
@@ -395,16 +449,16 @@ fn spawn_direct(
         .stderr
         .take()
         .ok_or_else(|| napi::Error::from_reason("missing stderr".to_string()))?;
-    spawn_reader(stdout, tx.clone(), "stdout", chunk_size, 0);
-    spawn_reader(stderr, tx, "stderr", chunk_size, 1);
-    Ok((pid, ProcessHandle::Pipe(child), stdin_pipe, None, 2))
+    spawn_async_reader(stdout, tx.clone(), "stdout", chunk_size, 0);
+    spawn_async_reader(stderr, tx, "stderr", chunk_size, 1);
+    Ok((pid, ProcessHandle::AsyncPipe(child), stdin_pipe, None, 2))
 }
 
 fn spawn_pty(
     config: &StreamStartConfig,
     tx: mpsc::Sender<Chunk>,
     chunk_size: usize,
-) -> Result<(u32, ProcessHandle, Option<ChildStdin>, Option<Box<dyn Write + Send>>, u64)> {
+) -> Result<(u32, ProcessHandle, Option<TokioChildStdin>, Option<Box<dyn Write + Send>>, u64)> {
     let system = native_pty_system();
     let pair = system
         .openpty(PtySize {
@@ -441,8 +495,8 @@ fn spawn_pty(
 
 fn kill_process(process: &mut ProcessHandle) -> Result<()> {
     match process {
-        ProcessHandle::Pipe(child) => child
-            .kill()
+        ProcessHandle::AsyncPipe(child) => child
+            .start_kill()
             .map_err(|err| napi::Error::from_reason(err.to_string())),
         ProcessHandle::Pty(child) => child
             .kill()
@@ -452,7 +506,7 @@ fn kill_process(process: &mut ProcessHandle) -> Result<()> {
 
 fn try_wait_process(process: &mut ProcessHandle) -> Result<Option<i32>> {
     match process {
-        ProcessHandle::Pipe(child) => child
+        ProcessHandle::AsyncPipe(child) => child
             .try_wait()
             .map_err(|err| napi::Error::from_reason(err.to_string()))
             .map(|item| item.map(|status| status.code().unwrap_or(0))),

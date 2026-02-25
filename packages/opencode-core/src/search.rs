@@ -9,6 +9,7 @@ use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicU64, Ordering as AtomicTickOrdering};
 use std::time::UNIX_EPOCH;
 
 #[napi(object)]
@@ -461,13 +462,28 @@ pub fn index_paths_cached(
     );
     let cache = INDEX_CACHE.get_or_init(DashMap::new);
     if !refresh.unwrap_or(false) {
-        if let Some(cached) = cache.get(&key) {
-            return Ok(cached.value().clone());
+        if let Some(mut cached) = cache.get_mut(&key) {
+            let (paths, used) = cached.value_mut();
+            *used = INDEX_CACHE_TICK.fetch_add(1, AtomicTickOrdering::Relaxed);
+            return Ok(paths.clone());
         }
     }
 
     let indexed = index_paths(search_path, include_hidden, follow_links, max_depth)?;
-    cache.insert(key, indexed.clone());
+    if cache.len() >= INDEX_CACHE_LIMIT {
+        if let Some(item) = cache.iter().min_by_key(|item| item.value().1) {
+            let evict = item.key().clone();
+            drop(item);
+            cache.remove(&evict);
+        }
+    }
+    cache.insert(
+        key,
+        (
+            indexed.clone(),
+            INDEX_CACHE_TICK.fetch_add(1, AtomicTickOrdering::Relaxed),
+        ),
+    );
     Ok(indexed)
 }
 
@@ -926,4 +942,6 @@ fn is_hidden_text(value: &str) -> bool {
         .any(|part| part.starts_with('.') && part.len() > 1)
 }
 
-static INDEX_CACHE: OnceLock<DashMap<String, IndexedPaths>> = OnceLock::new();
+static INDEX_CACHE: OnceLock<DashMap<String, (IndexedPaths, u64)>> = OnceLock::new();
+const INDEX_CACHE_LIMIT: usize = 64;
+static INDEX_CACHE_TICK: AtomicU64 = AtomicU64::new(1);
