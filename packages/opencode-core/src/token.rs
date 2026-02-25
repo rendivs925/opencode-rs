@@ -1,8 +1,14 @@
+use dashmap::DashMap;
 use memmap2::Mmap;
 use napi::Result;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
+use std::sync::{Arc, OnceLock};
+
+const BPE_CACHE_LIMIT: usize = 32;
+
+static BPE_CACHE: OnceLock<DashMap<String, Arc<tiktoken_rs::CoreBPE>>> = OnceLock::new();
 
 #[napi]
 pub fn count_tokens(path: String, encoding: String) -> Result<i32> {
@@ -36,14 +42,7 @@ pub fn count_tokens_from_text(text: String, encoding: String) -> Result<i32> {
 }
 
 fn count_tokens_from_text_internal(text: &str, encoding: &str) -> Result<i32> {
-    let bpe = match encoding {
-        "cl100k_base" => tiktoken_rs::cl100k_base(),
-        "p50k_base" => tiktoken_rs::p50k_base(),
-        "p50k_edit" => tiktoken_rs::p50k_edit(),
-        "r50k_base" => tiktoken_rs::r50k_base(),
-        _ => tiktoken_rs::get_bpe_from_model(encoding),
-    }
-    .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+    let bpe = bpe_for(encoding)?;
     let tokens = bpe.encode_ordinary(text);
     Ok(tokens.len() as i32)
 }
@@ -54,14 +53,7 @@ pub fn count_tokens_streaming(path: String, encoding: String, chunk_size: i32) -
     let file = File::open(path).map_err(|e| napi::Error::from_reason(e.to_string()))?;
     let mmap = unsafe { Mmap::map(&file).map_err(|e| napi::Error::from_reason(e.to_string()))? };
 
-    let bpe = match encoding.as_str() {
-        "cl100k_base" => tiktoken_rs::cl100k_base(),
-        "p50k_base" => tiktoken_rs::p50k_base(),
-        "p50k_edit" => tiktoken_rs::p50k_edit(),
-        "r50k_base" => tiktoken_rs::r50k_base(),
-        _ => tiktoken_rs::get_bpe_from_model(&encoding),
-    }
-    .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+    let bpe = bpe_for(&encoding)?;
     let mut total_tokens = 0;
 
     for chunk in mmap.chunks(chunk_size as usize) {
@@ -71,4 +63,31 @@ pub fn count_tokens_streaming(path: String, encoding: String, chunk_size: i32) -
     }
 
     Ok(total_tokens as i32)
+}
+
+fn bpe_for(encoding: &str) -> Result<Arc<tiktoken_rs::CoreBPE>> {
+    let cache = BPE_CACHE.get_or_init(DashMap::new);
+    if let Some(item) = cache.get(encoding) {
+        return Ok(Arc::clone(item.value()));
+    }
+
+    let bpe = Arc::new(
+        match encoding {
+            "cl100k_base" => tiktoken_rs::cl100k_base(),
+            "p50k_base" => tiktoken_rs::p50k_base(),
+            "p50k_edit" => tiktoken_rs::p50k_edit(),
+            "r50k_base" => tiktoken_rs::r50k_base(),
+            _ => tiktoken_rs::get_bpe_from_model(encoding),
+        }
+        .map_err(|e| napi::Error::from_reason(e.to_string()))?,
+    );
+
+    if cache.len() >= BPE_CACHE_LIMIT {
+        if let Some(first) = cache.iter().next() {
+            let key = first.key().clone();
+            cache.remove(&key);
+        }
+    }
+    cache.insert(encoding.to_string(), Arc::clone(&bpe));
+    Ok(bpe)
 }

@@ -1,10 +1,10 @@
+use dashmap::DashMap;
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use napi::Result;
 use rayon::prelude::*;
 use std::path::Path;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 
 #[napi]
 pub fn is_ignored(path: String, patterns: Vec<String>) -> Result<bool> {
@@ -122,18 +122,14 @@ fn key(parts: &[String]) -> String {
 }
 
 fn cached_matcher(patterns: &[String]) -> Result<Arc<Gitignore>> {
-    let cache = IGNORE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let cache = IGNORE_CACHE.get_or_init(DashMap::new);
     let k = key(patterns);
-    if let Ok(guard) = cache.lock() {
-        if let Some(item) = guard.get(&k) {
-            return Ok(item.clone());
-        }
+    if let Some(item) = cache.get(&k) {
+        return Ok(Arc::clone(item.value()));
     }
 
     let built = Arc::new(build_matcher(patterns)?);
-    if let Ok(mut guard) = cache.lock() {
-        guard.insert(k, built.clone());
-    }
+    cache.insert(k, Arc::clone(&built));
     Ok(built)
 }
 
@@ -145,12 +141,10 @@ fn cached_globset(patterns: Option<&Vec<String>>) -> Result<Arc<GlobSet>> {
         return Ok(Arc::new(GlobSetBuilder::new().build().map_err(|e| napi::Error::from_reason(e.to_string()))?));
     }
 
-    let cache = GLOB_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let cache = GLOB_CACHE.get_or_init(DashMap::new);
     let k = key(patterns);
-    if let Ok(guard) = cache.lock() {
-        if let Some(item) = guard.get(&k) {
-            return Ok(item.clone());
-        }
+    if let Some(item) = cache.get(&k) {
+        return Ok(Arc::clone(item.value()));
     }
 
     let mut builder = GlobSetBuilder::new();
@@ -159,9 +153,7 @@ fn cached_globset(patterns: Option<&Vec<String>>) -> Result<Arc<GlobSet>> {
         builder.add(glob);
     }
     let set = Arc::new(builder.build().map_err(|e| napi::Error::from_reason(e.to_string()))?);
-    if let Ok(mut guard) = cache.lock() {
-        guard.insert(k, set.clone());
-    }
+    cache.insert(k, Arc::clone(&set));
     Ok(set)
 }
 
@@ -173,5 +165,5 @@ fn is_whitelisted(path: &str, patterns: Option<&Vec<String>>) -> Result<bool> {
     Ok(set.is_match(path))
 }
 
-static IGNORE_CACHE: OnceLock<Mutex<HashMap<String, Arc<Gitignore>>>> = OnceLock::new();
-static GLOB_CACHE: OnceLock<Mutex<HashMap<String, Arc<GlobSet>>>> = OnceLock::new();
+static IGNORE_CACHE: OnceLock<DashMap<String, Arc<Gitignore>>> = OnceLock::new();
+static GLOB_CACHE: OnceLock<DashMap<String, Arc<GlobSet>>> = OnceLock::new();

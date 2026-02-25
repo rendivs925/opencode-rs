@@ -1,14 +1,14 @@
+use dashmap::DashMap;
 use globset::{GlobBuilder, GlobMatcher};
 use ignore::WalkBuilder;
 use napi::Result;
 use rayon::prelude::*;
-use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 
 const CACHE_LIMIT: usize = 256;
 
-static GLOB_CACHE: OnceLock<Mutex<HashMap<String, Arc<GlobMatcher>>>> = OnceLock::new();
+static GLOB_CACHE: OnceLock<DashMap<String, Arc<GlobMatcher>>> = OnceLock::new();
 
 #[napi]
 pub fn glob_match_compiled(pattern: String, filepath: String) -> Result<bool> {
@@ -104,27 +104,20 @@ pub fn glob_scan_compiled(
 
 #[napi]
 pub fn glob_compiled_cache_size() -> u32 {
-    let cache = GLOB_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Ok(guard) = cache.lock() {
-        return guard.len() as u32;
-    }
-    0
+    let cache = GLOB_CACHE.get_or_init(DashMap::new);
+    cache.len() as u32
 }
 
 #[napi]
 pub fn glob_compiled_cache_clear() {
-    let cache = GLOB_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Ok(mut guard) = cache.lock() {
-        guard.clear();
-    }
+    let cache = GLOB_CACHE.get_or_init(DashMap::new);
+    cache.clear();
 }
 
 fn compiled_matcher(pattern: &str) -> Result<Arc<GlobMatcher>> {
-    let cache = GLOB_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Ok(guard) = cache.lock() {
-        if let Some(item) = guard.get(pattern) {
-            return Ok(Arc::clone(item));
-        }
+    let cache = GLOB_CACHE.get_or_init(DashMap::new);
+    if let Some(item) = cache.get(pattern) {
+        return Ok(Arc::clone(item.value()));
     }
 
     let matcher = Arc::new(
@@ -134,13 +127,12 @@ fn compiled_matcher(pattern: &str) -> Result<Arc<GlobMatcher>> {
             .map_err(|err| napi::Error::from_reason(err.to_string()))?
             .compile_matcher(),
     );
-    if let Ok(mut guard) = cache.lock() {
-        if guard.len() >= CACHE_LIMIT {
-            if let Some(key) = guard.keys().next().cloned() {
-                guard.remove(&key);
-            }
+    if cache.len() >= CACHE_LIMIT {
+        if let Some(first) = cache.iter().next() {
+            let key = first.key().clone();
+            cache.remove(&key);
         }
-        guard.insert(pattern.to_string(), Arc::clone(&matcher));
     }
+    cache.insert(pattern.to_string(), Arc::clone(&matcher));
     Ok(matcher)
 }

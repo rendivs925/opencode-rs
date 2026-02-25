@@ -1,3 +1,4 @@
+use dashmap::DashMap;
 use globset::{GlobBuilder, GlobMatcher};
 use ignore::WalkBuilder;
 use napi::Result;
@@ -6,7 +7,7 @@ use regex::Regex;
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::time::UNIX_EPOCH;
 
@@ -458,19 +459,15 @@ pub fn index_paths_cached(
         follow_links.unwrap_or(false),
         max_depth.unwrap_or(-1)
     );
-    let cache = INDEX_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let cache = INDEX_CACHE.get_or_init(DashMap::new);
     if !refresh.unwrap_or(false) {
-        if let Ok(guard) = cache.lock() {
-            if let Some(cached) = guard.get(&key) {
-                return Ok(cached.clone());
-            }
+        if let Some(cached) = cache.get(&key) {
+            return Ok(cached.value().clone());
         }
     }
 
     let indexed = index_paths(search_path, include_hidden, follow_links, max_depth)?;
-    if let Ok(mut guard) = cache.lock() {
-        guard.insert(key, indexed.clone());
-    }
+    cache.insert(key, indexed.clone());
     Ok(indexed)
 }
 
@@ -929,4 +926,4 @@ fn is_hidden_text(value: &str) -> bool {
         .any(|part| part.starts_with('.') && part.len() > 1)
 }
 
-static INDEX_CACHE: OnceLock<Mutex<HashMap<String, IndexedPaths>>> = OnceLock::new();
+static INDEX_CACHE: OnceLock<DashMap<String, IndexedPaths>> = OnceLock::new();

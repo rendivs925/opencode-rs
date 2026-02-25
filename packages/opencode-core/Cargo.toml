@@ -30,6 +30,7 @@ tiktoken-rs = "0.5"
 
 rayon = "1"
 tokio = { version = "1", features = ["rt", "sync", "fs"] }
+dashmap = "6"
 
 tracing = "0.1"
 tracing-subscriber = "0.3"
