@@ -310,6 +310,61 @@ export const buildDiffPatch = core.buildDiffPatch as (
   }
 }
 
+export const createTwoFilesPatch = core.createTwoFilesPatch as (
+  oldPath: string,
+  newPath: string,
+  oldContent: string,
+  newContent: string,
+) => string
+
+export const diffLines = core.diffLines as (
+  oldContent: string,
+  newContent: string,
+) => {
+  oldIndex?: number
+  newIndex?: number
+  content: string
+  lineType: "added" | "removed" | "context"
+}[]
+
+export const applyPatch = core.applyPatch as (original: string, patch: string) => string
+
+export const replaceContent = core.replaceContent as (
+  content: string,
+  oldString: string,
+  newString: string,
+  replaceAll: boolean,
+) => { content: string; replaced: boolean; multipleMatches: boolean }
+
+export const findReplacements = core.findReplacements as (
+  content: string,
+  oldString: string,
+  strategy: string,
+) => { start: number; end: number; text: string }[]
+
+export const levenshteinDistance = core.levenshteinDistance as (a: string, b: string) => number
+
+export const countLinesFast = core.countLinesFast as (text: string) => number
+export const findWhitespaceIndices = core.findWhitespaceIndices as (text: string) => number[]
+export const isBinaryFile = core.isBinaryFile as (path: string) => boolean
+export const caseFoldAscii = core.caseFoldAscii as (text: string) => string
+
+export const fastHash = core.fastHash as (content: string) => string
+export const fileHash = core.fileHash as (path: string) => string
+
+export const streamCommand = core.streamCommand as (config: {
+  command: string
+  args: string[]
+  cwd: string
+  env: Record<string, string>
+  timeoutMs?: number
+}) => {
+  data: string
+  streamType: "stdout" | "stderr"
+  isComplete: boolean
+  exitCode?: number
+}
+
 export const resolveGitDir = core.resolveGitDir as (root: string) => string | undefined | null
 
 export const gitExec = core.gitExec as (

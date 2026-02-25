@@ -134,6 +134,52 @@ declare module "@opencode-ai/core" {
       index?: string
     }
   }
+  export function createTwoFilesPatch(
+    oldPath: string,
+    newPath: string,
+    oldContent: string,
+    newContent: string,
+  ): string
+  export function diffLines(
+    oldContent: string,
+    newContent: string,
+  ): Array<{
+    oldIndex?: number
+    newIndex?: number
+    content: string
+    lineType: "added" | "removed" | "context"
+  }>
+  export function applyPatch(original: string, patch: string): string
+  export function replaceContent(
+    content: string,
+    oldString: string,
+    newString: string,
+    replaceAll: boolean,
+  ): { content: string; replaced: boolean; multipleMatches: boolean }
+  export function findReplacements(
+    content: string,
+    oldString: string,
+    strategy: string,
+  ): Array<{ start: number; end: number; text: string }>
+  export function levenshteinDistance(a: string, b: string): number
+  export function countLinesFast(text: string): number
+  export function findWhitespaceIndices(text: string): number[]
+  export function isBinaryFile(path: string): boolean
+  export function caseFoldAscii(text: string): string
+  export function fastHash(content: string): string
+  export function fileHash(path: string): string
+  export function streamCommand(config: {
+    command: string
+    args: string[]
+    cwd: string
+    env: Record<string, string>
+    timeoutMs?: number
+  }): {
+    data: string
+    streamType: "stdout" | "stderr"
+    isComplete: boolean
+    exitCode?: number
+  }
   export function resolveGitDir(root: string): string | undefined | null
   export function gitExec(cwd: string, args: string[]): { exitCode: number; stdout: string; stderr: string }
   export function gitExecEnv(

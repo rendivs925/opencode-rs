@@ -6,7 +6,7 @@ import { Bus } from "../bus"
 import { FileWatcher } from "../file/watcher"
 import { Instance } from "../project/instance"
 import { Patch } from "../patch"
-import { createTwoFilesPatch, diffLines } from "diff"
+import { createTwoFilesPatch, diffLines } from "../core/native"
 import { assertExternalDirectory } from "./external-directory"
 import { trimDiff } from "./edit"
 import { LSP } from "../lsp"
@@ -71,8 +71,8 @@ export const ApplyPatchTool = Tool.define("apply_patch", {
           let additions = 0
           let deletions = 0
           for (const change of diffLines(oldContent, newContent)) {
-            if (change.added) additions += change.count || 0
-            if (change.removed) deletions += change.count || 0
+            if (change.lineType === "added") additions++
+            if (change.lineType === "removed") deletions++
           }
 
           fileChanges.push({
@@ -112,8 +112,8 @@ export const ApplyPatchTool = Tool.define("apply_patch", {
           let additions = 0
           let deletions = 0
           for (const change of diffLines(oldContent, newContent)) {
-            if (change.added) additions += change.count || 0
-            if (change.removed) deletions += change.count || 0
+            if (change.lineType === "added") additions++
+            if (change.lineType === "removed") deletions++
           }
 
           const movePath = hunk.move_path ? path.resolve(Instance.directory, hunk.move_path) : undefined

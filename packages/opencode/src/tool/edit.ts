@@ -7,7 +7,7 @@ import z from "zod"
 import * as path from "path"
 import { Tool } from "./tool"
 import { LSP } from "../lsp"
-import { createTwoFilesPatch, diffLines } from "diff"
+import { createTwoFilesPatch, diffLines, replaceContent } from "../core/native"
 import DESCRIPTION from "./edit.txt"
 import { File } from "../file"
 import { FileWatcher } from "../file/watcher"
@@ -78,7 +78,7 @@ export const EditTool = Tool.define("edit", {
       if (stats.isDirectory()) throw new Error(`Path is a directory, not a file: ${filePath}`)
       await FileTime.assert(ctx.sessionID, filePath)
       contentOld = await Filesystem.readText(filePath)
-      contentNew = replace(contentOld, params.oldString, params.newString, params.replaceAll)
+      contentNew = replaceContent(contentOld, params.oldString, params.newString, params.replaceAll ?? false).content
 
       diff = trimDiff(
         createTwoFilesPatch(filePath, filePath, normalizeLineEndings(contentOld), normalizeLineEndings(contentNew)),
@@ -116,8 +116,8 @@ export const EditTool = Tool.define("edit", {
       deletions: 0,
     }
     for (const change of diffLines(contentOld, contentNew)) {
-      if (change.added) filediff.additions += change.count || 0
-      if (change.removed) filediff.deletions += change.count || 0
+      if (change.lineType === "added") filediff.additions++
+      if (change.lineType === "removed") filediff.deletions++
     }
 
     ctx.metadata({
