@@ -365,6 +365,32 @@ export const streamCommand = core.streamCommand as (config: {
   exitCode?: number
 }
 
+export const streamStart = core.streamStart as (config: {
+  command: string
+  args: string[]
+  cwd: string
+  env: Record<string, string>
+  timeoutMs?: number
+  chunkSize?: number
+}) => {
+  id: string
+}
+
+export const streamRead = core.streamRead as (
+  id: string,
+  maxChunks?: number,
+) => {
+  chunks: {
+    data: string
+    streamType: "stdout" | "stderr"
+    isComplete: boolean
+    exitCode?: number
+  }[]
+  isComplete: boolean
+}
+
+export const streamKill = core.streamKill as (id: string) => boolean
+
 export const resolveGitDir = core.resolveGitDir as (root: string) => string | undefined | null
 
 export const gitExec = core.gitExec as (

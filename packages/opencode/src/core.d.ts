@@ -180,6 +180,27 @@ declare module "@opencode-ai/core" {
     isComplete: boolean
     exitCode?: number
   }
+  export function streamStart(config: {
+    command: string
+    args: string[]
+    cwd: string
+    env: Record<string, string>
+    timeoutMs?: number
+    chunkSize?: number
+  }): { id: string }
+  export function streamRead(
+    id: string,
+    maxChunks?: number,
+  ): {
+    chunks: Array<{
+      data: string
+      streamType: "stdout" | "stderr"
+      isComplete: boolean
+      exitCode?: number
+    }>
+    isComplete: boolean
+  }
+  export function streamKill(id: string): boolean
   export function resolveGitDir(root: string): string | undefined | null
   export function gitExec(cwd: string, args: string[]): { exitCode: number; stdout: string; stderr: string }
   export function gitExecEnv(
