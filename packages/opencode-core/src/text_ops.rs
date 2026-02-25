@@ -9,20 +9,25 @@ pub fn count_lines_fast(text: String) -> u32 {
     if text.is_empty() {
         return 0;
     }
-    memchr::memchr_iter(b'\n', text.as_bytes()).count() as u32 + 1
+    let bytes = text.as_bytes();
+    let count = if cfg!(target_arch = "x86_64") && is_avx2_available() {
+        // SAFETY: gated by runtime AVX2 feature detection and x86_64 target.
+        unsafe { count_byte_avx2(bytes, b'\n') }
+    } else {
+        memchr::memchr_iter(b'\n', bytes).count()
+    };
+    count as u32 + 1
 }
 
 #[napi]
 pub fn find_whitespace_indices(text: String) -> Vec<u32> {
     let bytes = text.as_bytes();
     if text.is_ascii() {
-        return bytes
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, byte)| {
-                is_ascii_whitespace(*byte).then_some(idx as u32)
-            })
-            .collect();
+        if cfg!(target_arch = "x86_64") && is_avx2_available() {
+            // SAFETY: gated by runtime AVX2 feature detection and x86_64 target.
+            return unsafe { find_ascii_whitespace_indices_avx2(bytes) };
+        }
+        return find_ascii_whitespace_indices_scalar(bytes);
     }
 
     text.char_indices()
@@ -37,7 +42,14 @@ pub fn is_binary_file(path: String) -> Result<bool> {
     let read = file
         .read(&mut bytes)
         .map_err(|err| napi::Error::from_reason(err.to_string()))?;
-    Ok(memchr::memchr(0, &bytes[..read]).is_some())
+    let sample = &bytes[..read];
+    let has_null = if cfg!(target_arch = "x86_64") && is_avx2_available() {
+        // SAFETY: gated by runtime AVX2 feature detection and x86_64 target.
+        unsafe { has_zero_byte_avx2(sample) }
+    } else {
+        memchr::memchr(0, sample).is_some()
+    };
+    Ok(has_null)
 }
 
 #[napi]
@@ -47,6 +59,123 @@ pub fn case_fold_ascii(text: String) -> String {
 
 fn is_ascii_whitespace(byte: u8) -> bool {
     matches!(byte, b' ' | b'\n' | b'\r' | b'\t' | 0x0b | 0x0c)
+}
+
+fn find_ascii_whitespace_indices_scalar(bytes: &[u8]) -> Vec<u32> {
+    bytes
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, byte)| is_ascii_whitespace(*byte).then_some(idx as u32))
+        .collect()
+}
+
+#[inline]
+fn is_avx2_available() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        std::arch::is_x86_feature_detected!("avx2")
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        false
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn count_byte_avx2(bytes: &[u8], needle: u8) -> usize {
+    use std::arch::x86_64::*;
+
+    let mut count = 0usize;
+    let mut i = 0usize;
+    let step = 32usize;
+    let lane = _mm256_set1_epi8(needle as i8);
+    while i + step <= bytes.len() {
+        let ptr = bytes.as_ptr().add(i) as *const __m256i;
+        let chunk = _mm256_loadu_si256(ptr);
+        let eq = _mm256_cmpeq_epi8(chunk, lane);
+        let mask = _mm256_movemask_epi8(eq) as u32;
+        count += mask.count_ones() as usize;
+        i += step;
+    }
+    count + memchr::memchr_iter(needle, &bytes[i..]).count()
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+unsafe fn count_byte_avx2(bytes: &[u8], needle: u8) -> usize {
+    memchr::memchr_iter(needle, bytes).count()
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn has_zero_byte_avx2(bytes: &[u8]) -> bool {
+    use std::arch::x86_64::*;
+
+    let mut i = 0usize;
+    let step = 32usize;
+    let zero = _mm256_setzero_si256();
+    while i + step <= bytes.len() {
+        let ptr = bytes.as_ptr().add(i) as *const __m256i;
+        let chunk = _mm256_loadu_si256(ptr);
+        let eq = _mm256_cmpeq_epi8(chunk, zero);
+        if _mm256_movemask_epi8(eq) != 0 {
+            return true;
+        }
+        i += step;
+    }
+    memchr::memchr(0, &bytes[i..]).is_some()
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+unsafe fn has_zero_byte_avx2(bytes: &[u8]) -> bool {
+    memchr::memchr(0, bytes).is_some()
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn find_ascii_whitespace_indices_avx2(bytes: &[u8]) -> Vec<u32> {
+    use std::arch::x86_64::*;
+
+    let mut out = Vec::<u32>::new();
+    let mut i = 0usize;
+    let step = 32usize;
+
+    let s = _mm256_set1_epi8(b' ' as i8);
+    let n = _mm256_set1_epi8(b'\n' as i8);
+    let r = _mm256_set1_epi8(b'\r' as i8);
+    let t = _mm256_set1_epi8(b'\t' as i8);
+    let v = _mm256_set1_epi8(0x0b_i8);
+    let f = _mm256_set1_epi8(0x0c_i8);
+
+    while i + step <= bytes.len() {
+        let ptr = bytes.as_ptr().add(i) as *const __m256i;
+        let chunk = _mm256_loadu_si256(ptr);
+        let mut ws = _mm256_cmpeq_epi8(chunk, s);
+        ws = _mm256_or_si256(ws, _mm256_cmpeq_epi8(chunk, n));
+        ws = _mm256_or_si256(ws, _mm256_cmpeq_epi8(chunk, r));
+        ws = _mm256_or_si256(ws, _mm256_cmpeq_epi8(chunk, t));
+        ws = _mm256_or_si256(ws, _mm256_cmpeq_epi8(chunk, v));
+        ws = _mm256_or_si256(ws, _mm256_cmpeq_epi8(chunk, f));
+        let mut mask = _mm256_movemask_epi8(ws) as u32;
+        while mask != 0 {
+            let bit = mask.trailing_zeros() as usize;
+            out.push((i + bit) as u32);
+            mask &= mask - 1;
+        }
+        i += step;
+    }
+
+    bytes[i..]
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, byte)| is_ascii_whitespace(*byte).then_some((i + idx) as u32))
+        .for_each(|idx| out.push(idx));
+    out
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+unsafe fn find_ascii_whitespace_indices_avx2(bytes: &[u8]) -> Vec<u32> {
+    find_ascii_whitespace_indices_scalar(bytes)
 }
 
 #[cfg(test)]
