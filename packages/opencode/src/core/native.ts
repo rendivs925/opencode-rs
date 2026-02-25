@@ -288,6 +288,13 @@ export const readDiffSnapshot = core.readDiffSnapshot as (
   file: string,
 ) => { hasDiff: boolean; original: string }
 
+export const snapshotDiffFull = core.snapshotDiffFull as (
+  gitDir: string,
+  workTree: string,
+  from: string,
+  to: string,
+) => { file: string; before: string; after: string; additions: number; deletions: number; status: "added" | "deleted" | "modified" }[]
+
 export const buildDiffPatch = core.buildDiffPatch as (
   file: string,
   original: string,

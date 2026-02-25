@@ -7,7 +7,7 @@ import z from "zod"
 import { Config } from "../config/config"
 import { Instance } from "../project/instance"
 import { Scheduler } from "../scheduler"
-import { gitExec, gitExecEnv } from "@/core/native"
+import { gitExec, gitExecEnv, snapshotDiffFull } from "@/core/native"
 
 export namespace Snapshot {
   const log = Log.create({ service: "snapshot" })
@@ -184,82 +184,7 @@ export namespace Snapshot {
   export type FileDiff = z.infer<typeof FileDiff>
   export async function diffFull(from: string, to: string): Promise<FileDiff[]> {
     const git = gitdir()
-    const result: FileDiff[] = []
-    const status = new Map<string, "added" | "deleted" | "modified">()
-
-    const statuses = runGit(
-      [
-        "-c",
-        "core.autocrlf=false",
-        "-c",
-        "core.quotepath=false",
-        "diff",
-        "--no-ext-diff",
-        "--name-status",
-        "--no-renames",
-        from,
-        to,
-        "--",
-        ".",
-      ],
-      { gitDir: git, workTree: Instance.worktree, cwd: Instance.directory },
-    ).stdout
-
-    for (const line of statuses.trim().split("\n")) {
-      if (!line) continue
-      const [code, file] = line.split("\t")
-      if (!code || !file) continue
-      const kind = code.startsWith("A") ? "added" : code.startsWith("D") ? "deleted" : "modified"
-      status.set(file, kind)
-    }
-
-    const numstat = runGit(
-      [
-        "-c",
-        "core.autocrlf=false",
-        "-c",
-        "core.quotepath=false",
-        "diff",
-        "--no-ext-diff",
-        "--no-renames",
-        "--numstat",
-        from,
-        to,
-        "--",
-        ".",
-      ],
-      { gitDir: git, workTree: Instance.worktree, cwd: Instance.directory },
-    ).stdout
-    for (const line of numstat.split("\n")) {
-      if (!line) continue
-      const [additions, deletions, file] = line.split("\t")
-      const isBinaryFile = additions === "-" && deletions === "-"
-      const before = isBinaryFile
-        ? ""
-        : runGit(["-c", "core.autocrlf=false", "show", `${from}:${file}`], {
-            gitDir: git,
-            workTree: Instance.worktree,
-            cwd: Instance.directory,
-          }).stdout
-      const after = isBinaryFile
-        ? ""
-        : runGit(["-c", "core.autocrlf=false", "show", `${to}:${file}`], {
-            gitDir: git,
-            workTree: Instance.worktree,
-            cwd: Instance.directory,
-          }).stdout
-      const added = isBinaryFile ? 0 : parseInt(additions)
-      const deleted = isBinaryFile ? 0 : parseInt(deletions)
-      result.push({
-        file,
-        before,
-        after,
-        additions: Number.isFinite(added) ? added : 0,
-        deletions: Number.isFinite(deleted) ? deleted : 0,
-        status: status.get(file) ?? "modified",
-      })
-    }
-    return result
+    return snapshotDiffFull(git, Instance.worktree, from, to)
   }
 
   function gitdir() {

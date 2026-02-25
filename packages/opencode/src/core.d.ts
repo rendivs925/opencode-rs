@@ -106,6 +106,19 @@ declare module "@opencode-ai/core" {
     root: string,
   ): Array<{ path: string; added: number; removed: number; status: "added" | "deleted" | "modified" }>
   export function readDiffSnapshot(root: string, file: string): { hasDiff: boolean; original: string }
+  export function snapshotDiffFull(
+    gitDir: string,
+    workTree: string,
+    from: string,
+    to: string,
+  ): Array<{
+    file: string
+    before: string
+    after: string
+    additions: number
+    deletions: number
+    status: "added" | "deleted" | "modified"
+  }>
   export function searchIndexedPaths(
     indexed: { files: string[]; dirs: string[] },
     query: string,

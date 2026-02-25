@@ -2,6 +2,7 @@ use base64::Engine;
 use crate::create_two_files_patch;
 use napi::Result;
 use regex::Regex;
+use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 use std::sync::OnceLock;
@@ -100,6 +101,17 @@ pub struct GitStatusEntry {
 pub struct ReadDiffSnapshot {
     pub has_diff: bool,
     pub original: String,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct SnapshotDiffEntry {
+    pub file: String,
+    pub before: String,
+    pub after: String,
+    pub additions: i32,
+    pub deletions: i32,
+    pub status: String,
 }
 
 #[napi(object)]
@@ -432,6 +444,116 @@ pub fn build_diff_patch(file: String, original: String, content: String) -> Resu
     };
 
     Ok(DiffPatchResult { diff, patch })
+}
+
+#[napi]
+pub fn snapshot_diff_full(git_dir: String, work_tree: String, from: String, to: String) -> Result<Vec<SnapshotDiffEntry>> {
+    let git_config_global = std::env::var("GIT_CONFIG_GLOBAL").ok();
+    let run = |args: Vec<String>| -> Result<GitExecResult> {
+        run_git_exec(
+            &work_tree,
+            &args,
+            Some(&git_dir),
+            Some(&work_tree),
+            git_config_global.as_deref(),
+        )
+    };
+
+    let status_args = vec![
+        "-c".to_string(),
+        "core.autocrlf=false".to_string(),
+        "-c".to_string(),
+        "core.quotepath=false".to_string(),
+        "diff".to_string(),
+        "--no-ext-diff".to_string(),
+        "--name-status".to_string(),
+        "--no-renames".to_string(),
+        from.clone(),
+        to.clone(),
+        "--".to_string(),
+        ".".to_string(),
+    ];
+    let status_out = run(status_args)?;
+    let mut status = HashMap::<String, String>::new();
+    for line in status_out.stdout.lines().filter(|line| !line.trim().is_empty()) {
+        let mut parts = line.splitn(2, '\t');
+        let code = parts.next().unwrap_or_default();
+        let file = parts.next().unwrap_or_default();
+        if file.is_empty() {
+            continue;
+        }
+        let kind = if code.starts_with('A') {
+            "added"
+        } else if code.starts_with('D') {
+            "deleted"
+        } else {
+            "modified"
+        };
+        status.insert(file.to_string(), kind.to_string());
+    }
+
+    let numstat_args = vec![
+        "-c".to_string(),
+        "core.autocrlf=false".to_string(),
+        "-c".to_string(),
+        "core.quotepath=false".to_string(),
+        "diff".to_string(),
+        "--no-ext-diff".to_string(),
+        "--no-renames".to_string(),
+        "--numstat".to_string(),
+        from.clone(),
+        to.clone(),
+        "--".to_string(),
+        ".".to_string(),
+    ];
+    let numstat_out = run(numstat_args)?;
+
+    let mut out = Vec::<SnapshotDiffEntry>::new();
+    for line in numstat_out.stdout.lines().filter(|line| !line.trim().is_empty()) {
+        let mut parts = line.splitn(3, '\t');
+        let additions = parts.next().unwrap_or_default();
+        let deletions = parts.next().unwrap_or_default();
+        let file = parts.next().unwrap_or_default();
+        if file.is_empty() {
+            continue;
+        }
+        let is_binary = additions == "-" && deletions == "-";
+        let before = if is_binary {
+            String::new()
+        } else {
+            run(vec![
+                "-c".to_string(),
+                "core.autocrlf=false".to_string(),
+                "show".to_string(),
+                format!("{from}:{file}"),
+            ])?
+            .stdout
+        };
+        let after = if is_binary {
+            String::new()
+        } else {
+            run(vec![
+                "-c".to_string(),
+                "core.autocrlf=false".to_string(),
+                "show".to_string(),
+                format!("{to}:{file}"),
+            ])?
+            .stdout
+        };
+        out.push(SnapshotDiffEntry {
+            file: file.to_string(),
+            before,
+            after,
+            additions: additions.parse::<i32>().unwrap_or(0),
+            deletions: deletions.parse::<i32>().unwrap_or(0),
+            status: status
+                .get(file)
+                .cloned()
+                .unwrap_or_else(|| "modified".to_string()),
+        });
+    }
+
+    Ok(out)
 }
 
 #[napi]

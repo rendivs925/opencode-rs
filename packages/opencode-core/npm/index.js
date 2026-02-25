@@ -57,6 +57,7 @@ module.exports = {
   countUntrackedLines: native.countUntrackedLines,
   gitStatus: native.gitStatus,
   readDiffSnapshot: native.readDiffSnapshot,
+  snapshotDiffFull: native.snapshotDiffFull,
   buildDiffPatch: native.buildDiffPatch,
   createTwoFilesPatch: native.createTwoFilesPatch,
   diffLines: native.diffLines,
