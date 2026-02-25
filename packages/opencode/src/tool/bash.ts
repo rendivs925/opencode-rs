@@ -13,115 +13,12 @@ import { Shell } from "@/shell/shell"
 import { BashArity } from "@/permission/arity"
 import { Truncate } from "./truncation"
 import { Plugin } from "@/plugin"
-import { streamKill, streamRead, streamStart } from "../core/native"
+import { parseBashCommand, streamKill, streamRead, streamStart } from "../core/native"
 
 const MAX_METADATA_LENGTH = 30_000
 const DEFAULT_TIMEOUT = Flag.OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS || 2 * 60 * 1000
 
 export const log = Log.create({ service: "bash-tool" })
-
-function splitCommands(command: string) {
-  const segments: string[] = []
-  let start = 0
-  let i = 0
-  let single = false
-  let double = false
-  let back = false
-  while (i < command.length) {
-    const c = command[i]
-    const n = i + 1 < command.length ? command[i + 1] : ""
-    if (!single && !double && c === "\\") {
-      i += 2
-      continue
-    }
-    if (!double && !back && c === "'") {
-      single = !single
-      i++
-      continue
-    }
-    if (!single && !back && c === '"') {
-      double = !double
-      i++
-      continue
-    }
-    if (!single && !double && c === "`") {
-      back = !back
-      i++
-      continue
-    }
-    if (!single && !double && !back) {
-      const isPair = (c === "&" && n === "&") || (c === "|" && n === "|")
-      const isSingle = c === ";" || c === "\n" || c === "|"
-      if (isPair || isSingle) {
-        const raw = command.slice(start, i).trim()
-        if (raw) segments.push(raw)
-        i += isPair ? 2 : 1
-        start = i
-        continue
-      }
-    }
-    i++
-  }
-  const tail = command.slice(start).trim()
-  if (tail) segments.push(tail)
-  return segments
-}
-
-function splitWords(command: string) {
-  const words: string[] = []
-  let out = ""
-  let i = 0
-  let single = false
-  let double = false
-  while (i < command.length) {
-    const c = command[i]
-    if (!single && c === "\\") {
-      if (i + 1 < command.length) {
-        out += command[i + 1]
-        i += 2
-        continue
-      }
-      i++
-      continue
-    }
-    if (!double && c === "'") {
-      single = !single
-      i++
-      continue
-    }
-    if (!single && c === '"') {
-      double = !double
-      i++
-      continue
-    }
-    if (!single && !double && /\s/.test(c)) {
-      if (out) {
-        words.push(out)
-        out = ""
-      }
-      i++
-      continue
-    }
-    out += c
-    i++
-  }
-  if (out) words.push(out)
-  return words
-}
-
-function parseCommands(input: string) {
-  return splitCommands(input).map((text) => {
-    const tokens = splitWords(text)
-    let start = 0
-    while (start < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=.*/.test(tokens[start])) {
-      start++
-    }
-    return {
-      text,
-      command: tokens.slice(start),
-    }
-  })
-}
 
 function shellArgs(shell: string, command: string) {
   if (process.platform !== "win32") return { command: shell, args: ["-lc", command] }
@@ -167,7 +64,7 @@ export const BashTool = Tool.define("bash", async () => {
       const patterns = new Set<string>()
       const always = new Set<string>()
 
-      for (const cmd of parseCommands(params.command)) {
+      for (const cmd of parseBashCommand(params.command).commands) {
         const commandText = cmd.text
         const command = cmd.command
 

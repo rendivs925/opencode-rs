@@ -2,6 +2,7 @@
 extern crate napi_derive;
 
 mod archive;
+mod bash;
 mod cache;
 mod diff;
 mod edit;
@@ -21,6 +22,7 @@ mod truncation;
 mod watcher;
 
 pub use archive::*;
+pub use bash::*;
 pub use cache::*;
 pub use diff::*;
 pub use edit::*;

@@ -240,6 +240,9 @@ declare module "@opencode-ai/core" {
       isEndOfFile?: boolean
     }>,
   ): { unifiedDiff: string; content: string }
+  export function parseBashCommand(input: string): {
+    commands: Array<{ text: string; command: string[] }>
+  }
   export function resolveGitDir(root: string): string | undefined | null
   export function gitExec(cwd: string, args: string[]): { exitCode: number; stdout: string; stderr: string }
   export function gitExecEnv(

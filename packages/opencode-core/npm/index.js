@@ -77,6 +77,7 @@ module.exports = {
   streamKill: native.streamKill,
   parseApplyPatch: native.parseApplyPatch,
   deriveNewContentsFromChunks: native.deriveNewContentsFromChunks,
+  parseBashCommand: native.parseBashCommand,
   resolveGitDir: native.resolveGitDir,
   gitExec: native.gitExec,
   gitExecEnv: native.gitExecEnv,

@@ -429,6 +429,13 @@ export const deriveNewContentsFromChunks = core.deriveNewContentsFromChunks as (
   content: string
 }
 
+export const parseBashCommand = core.parseBashCommand as (input: string) => {
+  commands: {
+    text: string
+    command: string[]
+  }[]
+}
+
 export const resolveGitDir = core.resolveGitDir as (root: string) => string | undefined | null
 
 export const gitExec = core.gitExec as (
