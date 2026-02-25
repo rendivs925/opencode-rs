@@ -35,13 +35,9 @@ jobs:
         working-directory: packages/opencode-core
         run: bunx --bun @napi-rs/cli@latest build --release --platform
 
-      - name: Run native benchmark
+      - name: Run benchmark suite with regression guard
         working-directory: packages/opencode-core
-        run: node script/benchmark.mjs
-
-      - name: Run JS vs Rust benchmark
-        working-directory: packages/opencode-core
-        run: node script/benchmark-compare.mjs
+        run: npm run bench:ci
 
       - name: Upload benchmark reports
         uses: actions/upload-artifact@v4

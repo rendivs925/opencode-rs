@@ -64,7 +64,21 @@ pub fn is_binary_file(path: String) -> Result<bool> {
 
 #[napi]
 pub fn case_fold_ascii(text: String) -> String {
-    text.to_ascii_lowercase()
+    if text.is_empty() {
+        return text;
+    }
+    let mut out = text.into_bytes();
+    if cfg!(target_arch = "x86_64") && is_avx2_available() {
+        // SAFETY: runtime AVX2 feature check gates x86_64 SIMD usage.
+        unsafe { lowercase_ascii_avx2(&mut out) };
+    } else if cfg!(target_arch = "aarch64") && is_neon_available() {
+        // SAFETY: runtime NEON feature check gates aarch64 SIMD usage.
+        unsafe { lowercase_ascii_neon(&mut out) };
+    } else {
+        lowercase_ascii_scalar(&mut out);
+    }
+    // SAFETY: ASCII lowercase transform preserves valid UTF-8.
+    unsafe { String::from_utf8_unchecked(out) }
 }
 
 fn is_ascii_whitespace(byte: u8) -> bool {
@@ -302,6 +316,70 @@ unsafe fn find_ascii_whitespace_indices_neon(bytes: &[u8]) -> Vec<u32> {
     find_ascii_whitespace_indices_scalar(bytes)
 }
 
+fn lowercase_ascii_scalar(bytes: &mut [u8]) {
+    bytes.iter_mut().for_each(|item| {
+        if item.is_ascii_uppercase() {
+            *item |= 0x20;
+        }
+    });
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn lowercase_ascii_avx2(bytes: &mut [u8]) {
+    use std::arch::x86_64::*;
+
+    let mut i = 0usize;
+    let step = 32usize;
+    let a = _mm256_set1_epi8((b'A' - 1) as i8);
+    let z = _mm256_set1_epi8((b'Z' + 1) as i8);
+    let bit = _mm256_set1_epi8(0x20_i8);
+    while i + step <= bytes.len() {
+        let ptr = bytes.as_mut_ptr().add(i) as *mut __m256i;
+        let chunk = _mm256_loadu_si256(ptr);
+        let gt_a = _mm256_cmpgt_epi8(chunk, a);
+        let lt_z = _mm256_cmpgt_epi8(z, chunk);
+        let upper = _mm256_and_si256(gt_a, lt_z);
+        let lower = _mm256_or_si256(chunk, _mm256_and_si256(upper, bit));
+        _mm256_storeu_si256(ptr, lower);
+        i += step;
+    }
+    lowercase_ascii_scalar(&mut bytes[i..]);
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+unsafe fn lowercase_ascii_avx2(bytes: &mut [u8]) {
+    lowercase_ascii_scalar(bytes);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn lowercase_ascii_neon(bytes: &mut [u8]) {
+    use std::arch::aarch64::*;
+
+    let mut i = 0usize;
+    let step = 16usize;
+    let a = vdupq_n_u8(b'A');
+    let z = vdupq_n_u8(b'Z');
+    let bit = vdupq_n_u8(0x20);
+    while i + step <= bytes.len() {
+        let ptr = bytes.as_mut_ptr().add(i);
+        let chunk = vld1q_u8(ptr);
+        let ge = vcgeq_u8(chunk, a);
+        let le = vcleq_u8(chunk, z);
+        let upper = vandq_u8(ge, le);
+        let lower = vorrq_u8(chunk, vandq_u8(upper, bit));
+        vst1q_u8(ptr, lower);
+        i += step;
+    }
+    lowercase_ascii_scalar(&mut bytes[i..]);
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+unsafe fn lowercase_ascii_neon(bytes: &mut [u8]) {
+    lowercase_ascii_scalar(bytes);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,5 +420,16 @@ mod tests {
         let _ = std::fs::remove_file(text);
         let _ = std::fs::remove_file(binary);
         let _ = std::fs::remove_dir(root);
+    }
+
+    #[test]
+    fn case_fold_ascii_lowercases_ascii_only() {
+        assert_eq!(case_fold_ascii("ABC xyz 123".to_string()), "abc xyz 123");
+        assert_eq!(case_fold_ascii("RuSt-NEON_AVX2".to_string()), "rust-neon_avx2");
+    }
+
+    #[test]
+    fn case_fold_ascii_leaves_non_ascii_unchanged() {
+        assert_eq!(case_fold_ascii("Résumé Σ".to_string()), "résumé Σ");
     }
 }

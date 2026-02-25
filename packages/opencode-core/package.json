@@ -23,6 +23,8 @@
     "exports:check": "node script/generate-exports.mjs --check",
     "bench:native": "node script/benchmark.mjs",
     "bench:compare": "node script/benchmark-compare.mjs",
+    "bench:guard": "node script/benchmark-guard.mjs",
+    "bench:ci": "node script/benchmark.mjs && node script/benchmark-compare.mjs && node script/benchmark-guard.mjs",
     "prepublishOnly": "npm run build"
   },
   "keywords": [

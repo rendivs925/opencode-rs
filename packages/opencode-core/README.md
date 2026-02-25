@@ -118,12 +118,17 @@ npm run bench:native
 
 # JS vs Rust comparison report
 npm run bench:compare
+
+# CI suite (reports + regression guard)
+npm run bench:ci
 ```
 
 Reports are written to:
 
 - `packages/opencode-core/benchmarks/report.md`
 - `packages/opencode-core/benchmarks/compare-report.md`
+
+`bench:ci` fails if critical native operations regress above configured ms/op budgets.
 
 ## Performance
 
