@@ -1,4 +1,5 @@
 use bincode;
+use crate::hash::hash_bytes;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
@@ -17,17 +18,8 @@ pub enum CacheValue {
     IgnorePatterns(Vec<String>),
 }
 
-fn simple_hash(s: &str) -> u64 {
-    let mut hash: u64 = 0;
-    for (i, byte) in s.bytes().enumerate() {
-        hash = hash.wrapping_add((byte as u64).wrapping_mul((i as u64).wrapping_add(1)));
-        hash = hash.rotate_left(5);
-    }
-    hash
-}
-
 fn get_cache_path(cache_dir: &str, key: &str) -> PathBuf {
-    let hash = format!("{:x}", simple_hash(key));
+    let hash = format!("{:016x}", hash_bytes(key.as_bytes()));
     PathBuf::from(cache_dir).join(format!("{}.cache", hash))
 }
 
