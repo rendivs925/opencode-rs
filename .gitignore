@@ -31,3 +31,4 @@ tsconfig.tsbuildinfo
 docs/
 *.node
 packages/opencode-core/prebuilds/
+session_control.json
