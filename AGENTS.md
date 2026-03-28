@@ -1,113 +1,306 @@
-- To regenerate the JavaScript SDK, run `./packages/sdk/js/script/build.ts`.
-- ALWAYS USE PARALLEL TOOLS WHEN APPLICABLE.
-- The default branch in this repo is `dev`.
-- Local `main` ref may not exist; use `dev` or `origin/dev` for diffs.
-- Prefer automation: execute requested actions without confirmation unless blocked by missing info or safety/irreversibility.
+# AI Agent Guidelines
 
-## Style Guide
+This document provides universal guidelines for AI agents working in any codebase. These rules apply to all languages (Rust, TypeScript, Python, Go, etc.). When language-specific examples are needed, Rust is used.
 
-### General Principles
+## Core Principles
 
-- Keep things in one function unless composable or reusable
-- Avoid `try`/`catch` where possible
-- Avoid using the `any` type
-- Prefer single word variable names where possible
-- Use Bun APIs when possible, like `Bun.file()`
-- Rely on type inference when possible; avoid explicit type annotations or interfaces unless necessary for exports or clarity
-- Prefer functional array methods (flatMap, filter, map) over for loops; use type guards on filter to maintain type inference downstream
+1. **Never break existing functionality** - Test changes before submitting
+2. **Prefer existing patterns** - Follow what's already in the codebase
+3. **Keep changes focused** - One logical change per PR
+4. **Validate all input** - Never trust external data without validation
+5. **Handle errors properly** - Never silently swallow errors
 
-### Naming
+---
 
-Prefer single word names for variables and functions. Only use multiple words if necessary.
+# Code Quality Rules
 
-```ts
-// Good
-const foo = 1
-function journal(dir: string) {}
+## Always Avoid
 
-// Bad
-const fooBar = 1
-function prepareJournal(dir: string) {}
+| Rule                                    | Example (Rust)                | Reason                                        |
+| --------------------------------------- | ----------------------------- | --------------------------------------------- |
+| No `unwrap()` / `expect()` / `panic!()` | `value.unwrap()`              | Unhandled panics crash the application        |
+| No `.clone()` without justification     | `data.clone()`                | Memory overhead; often indicates design issue |
+| No mutable global state                 | `static mut COUNTER: u32 = 0` | Creates unpredictable behavior                |
+| No hardcoded secrets                    | `let api_key = "secret"`      | Security risk; use environment variables      |
+| No debug prints in production           | `println!("{:?}", data)`      | Performance and security concern              |
+
+## Size Limits
+
+| Metric                | Limit     | Action if Exceeded       |
+| --------------------- | --------- | ------------------------ |
+| Files                 | ≤ 300 LOC | Split by responsibility  |
+| Functions             | ≤ 60 LOC  | Extract sub-functions    |
+| Match arms / branches | ≤ 10      | Extract helper functions |
+
+## Layering
+
+| Layer             | Location                                               |
+| ----------------- | ------------------------------------------------------ |
+| Data access / SQL | `repo/`, `repository/`, `data/`, `db/`                 |
+| Business logic    | `services/`, `domain/`, `application/`, `usecases/`    |
+| HTTP/RPC          | `controllers/`, `handlers/`, `api/`, `infrastructure/` |
+| UI components     | `components/`, `views/`, `ui/`, `presentation/`        |
+
+---
+
+# Type System Rules
+
+## Use Types, Not Primitives
+
+```rust
+// CORRECT - typed enum
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum UserRole { Admin, Manager, User }
+
+// WRONG - string comparison
+if role == "admin" { ... }
 ```
 
-Reduce total variable count by inlining when a value is only used once.
+```typescript
+// CORRECT - TypeScript
+enum UserRole { Admin, Manager, User }
 
-```ts
-// Good
-const journal = await Bun.file(path.join(dir, "journal.json")).json()
-
-// Bad
-const journalPath = path.join(dir, "journal.json")
-const journal = await Bun.file(journalPath).json()
+// WRONG - string comparison
+if (role === "admin") { ... }
 ```
 
-### Destructuring
+## Use Structs/Interfaces for Structured Data
 
-Avoid unnecessary destructuring. Use dot notation to preserve context.
-
-```ts
-// Good
-obj.a
-obj.b
-
-// Bad
-const { a, b } = obj
-```
-
-### Variables
-
-Prefer `const` over `let`. Use ternaries or early returns instead of reassignment.
-
-```ts
-// Good
-const foo = condition ? 1 : 2
-
-// Bad
-let foo
-if (condition) foo = 1
-else foo = 2
-```
-
-### Control Flow
-
-Avoid `else` statements. Prefer early returns.
-
-```ts
-// Good
-function foo() {
-  if (condition) return 1
-  return 2
+```rust
+// CORRECT - typed struct
+#[derive(Serialize, Deserialize)]
+pub struct CreateUserInput {
+    pub email: String,
+    pub name: String,
 }
 
-// Bad
-function foo() {
-  if (condition) return 1
-  else return 2
+// WRONG - loose object
+let user: serde_json::Value = ...;
+```
+
+```typescript
+// CORRECT - typed interface
+interface CreateUserInput {
+    email: string;
+    name: string;
+}
+
+// WRONG - loose object
+const user: Record<string, unknown> = { ... };
+```
+
+## Use Built-in Serialization
+
+```rust
+// CORRECT - automatic serialization with serde
+#[derive(Serialize, Deserialize, EnumString)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum Status { Active, Inactive }
+
+// WRONG - manual parsing
+fn parse_status(s: &str) -> Status {
+    match s {
+        "ACTIVE" => Status::Active,
+        ...
+    }
 }
 ```
 
-### Schema Definitions (Drizzle)
+```typescript
+// CORRECT - TypeScript enum
+enum Status {
+  Active = "ACTIVE",
+  Inactive = "INACTIVE",
+}
 
-Use snake_case for field names so column names don't need to be redefined as strings.
-
-```ts
-// Good
-const table = sqliteTable("session", {
-  id: text().primaryKey(),
-  project_id: text().notNull(),
-  created_at: integer().notNull(),
-})
-
-// Bad
-const table = sqliteTable("session", {
-  id: text("id").primaryKey(),
-  projectID: text("project_id").notNull(),
-  createdAt: integer("created_at").notNull(),
-})
+// WRONG - manual string mapping
+function parseStatus(s: string): Status {
+  return s === "ACTIVE" ? Status.Active : Status.Inactive
+}
 ```
 
-## Testing
+## Avoid Unnecessary DTOs
 
-- Avoid mocks as much as possible
-- Test actual implementation, do not duplicate logic into tests
-- Tests cannot run from repo root (guard: `do-not-run-tests-from-root`); run from package dirs like `packages/opencode`.
+```rust
+// WRONG - duplicate type
+pub struct UserDto { /* same fields as User */ }
+
+// CORRECT - reuse the type directly
+pub async fn get_user() -> Result<User, Error>
+```
+
+```typescript
+// WRONG - duplicate interface
+interface UserDto {
+  email: string
+  name: string
+}
+
+// CORRECT - reuse the type directly
+async function getUser(): Promise<User>
+```
+
+### When DTOs ARE Allowed
+
+1. API boundary with different schema
+2. Aggregated/computed response types
+3. Security filtering (hiding internal fields)
+
+---
+
+# Error Handling
+
+- Use typed errors (`Result<T, E>` in Rust, custom error classes in other languages)
+- Log errors **once** at the boundary
+- Never expose internal error details to users
+- Return meaningful error messages
+
+```rust
+// CORRECT - Rust
+match save_user(&user).await {
+    Ok(_) => Ok(Response::success()),
+    Err(e) => {
+        error!("Failed to save user: {:?}", e);
+        Err(Error::UserSave("Unable to save user".into()))
+    }
+}
+```
+
+```typescript
+// CORRECT - TypeScript
+try {
+  await saveUser(user)
+} catch (error) {
+  logger.error("Failed to save user", { error, userId: user.id })
+  throw new UserSaveError("Unable to save user. Please try again.")
+}
+```
+
+```python
+# CORRECT - Python
+try:
+    save_user(user)
+except DatabaseError as e:
+    logger.error(f"Failed to save user: {e}")
+    raise UserSaveError("Unable to save user") from e
+```
+
+---
+
+# Validation
+
+- Validate all user input at system boundaries
+- Use validation libraries (validator, garde, zod, pydantic, etc.)
+- Return clear, actionable error messages
+
+```rust
+// CORRECT - Rust with validator
+pub fn create_user(input: CreateUserInput) -> Result<User, ValidationError> {
+    validated = UserSchema.validate(&input)?;
+    Ok(User::from(validated))
+}
+```
+
+```typescript
+// CORRECT - TypeScript with Zod
+function createUser(input: unknown): Result<User, ValidationError> {
+  const parsed = userSchema.safeParse(input)
+  if (!parsed.success) {
+    return Err(new ValidationError(parsed.error.errors))
+  }
+  return Ok(parsed.data)
+}
+```
+
+---
+
+# Duplicate Code
+
+## Never Duplicate
+
+- Enum or struct definitions
+- Repeated match blocks / conditionals
+- Helper functions
+- Validation logic
+- Type definitions that already exist
+
+## Always Extract
+
+```rust
+// WRONG - duplicated logic
+if user.role == Role::Admin { ... } // in 10 places
+
+// CORRECT - shared function
+pub fn is_admin(user: &User) -> bool {
+    matches!(user.role, Role::Admin)
+}
+```
+
+```typescript
+// WRONG - duplicated logic
+if (user.role === "admin") { ... } // in 10 places
+
+// CORRECT - shared function
+function isAdmin(user: User): boolean {
+    return user.role === "admin";
+}
+```
+
+---
+
+# Testing
+
+- Write tests for new functionality
+- Follow existing test patterns in the project
+- Keep tests focused and readable
+
+---
+
+# CI Gates
+
+Run the appropriate commands for your project:
+
+```bash
+# Format check
+cargo fmt --all -- --check    # Rust
+npm run format -- --check      # TypeScript/JavaScript
+black --check .                # Python
+
+# Lint check (warnings are errors)
+cargo clippy --all-targets --all-features -- -D warnings  # Rust
+npm run lint                   # TypeScript/JavaScript
+ruff check .                   # Python
+
+# Type check
+cargo check --all-targets       # Rust
+npm run typecheck              # TypeScript
+mypy .                         # Python
+
+# Tests
+cargo test --workspace         # Rust
+npm test                       # TypeScript/JavaScript
+pytest                         # Python
+```
+
+---
+
+# PR Checklist
+
+Before submitting:
+
+- [ ] No `unwrap()` / `expect()` / `panic!()` in production paths (Rust)
+- [ ] No `throw` without proper handling in production paths
+- [ ] No `.clone()` without justification (Rust)
+- [ ] Files ≤ 300 LOC, functions ≤ 60 LOC
+- [ ] No duplicate enum/struct definitions
+- [ ] No unnecessary DTOs or mapping layers
+- [ ] Enums used for closed sets instead of strings
+- [ ] Typed structs used instead of loose objects
+- [ ] Serialization handled by built-in libraries (serde, zod, pydantic, etc.)
+- [ ] Errors handled properly with single log point
+- [ ] All user input validated
+- [ ] Format check passes
+- [ ] Lint passes
+- [ ] Type check passes
+- [ ] Tests pass
