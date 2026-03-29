@@ -122,6 +122,68 @@ For more info on how to configure OpenCode, [**head over to our docs**](https://
 
 If you're interested in contributing to OpenCode, please read our [contributing docs](./CONTRIBUTING.md) before submitting a pull request.
 
+### Development (Rust Version)
+
+This is the Rust rewrite of OpenCode. The TypeScript implementation is at [anomalyco/opencode](https://github.com/anomalyco/opencode).
+
+#### Prerequisites
+
+- **Rust** - Install via [rustup](https://rustup.rs/)
+- **Bun** - JavaScript runtime for build scripts
+- **Node.js** - For TypeScript packages in `packages/`
+- **models.json** - Required for building (get from release artifacts or cache)
+
+#### Build
+
+```bash
+# Build the OpenCode binary
+make opencode-build
+
+# Build and install to ~/.opencode/bin/opencode
+make opencode-install
+
+# Verify installation
+make opencode-verify
+# or
+opencode --version
+```
+
+#### Project Structure
+
+```
+packages/
+├── opencode/          # Main Rust + TypeScript hybrid
+│   ├── src/          # Rust source (server, TUI, CLI)
+│   └── plugin/       # Plugin system
+├── sdk/              # OpenCode SDK (TypeScript)
+├── console/          # Web console (TypeScript)
+└── web/              # Landing page (TypeScript)
+
+ai-mem/               # Brain-inspired memory plugin (TypeScript)
+docs/                 # Documentation
+```
+
+#### Code Quality
+
+Run before submitting:
+
+```bash
+cargo fmt --all -- --check    # Format
+cargo clippy --all-targets -- -D warnings  # Lint
+cargo check --all-targets     # Type check
+cargo test --workspace        # Tests
+```
+
+#### Package Scripts
+
+In `packages/opencode`:
+
+```bash
+bun run typecheck  # TypeScript check
+bun run lint       # Lint
+bun run db generate --name <slug>  # Generate migration
+```
+
 ### Building on OpenCode
 
 If you are working on a project that's related to OpenCode and is using "opencode" as part of its name, for example "opencode-dashboard" or "opencode-mobile", please add a note to your README to clarify that it is not built by the OpenCode team and is not affiliated with us in any way.
