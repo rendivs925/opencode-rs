@@ -76,6 +76,8 @@ module.exports = {
   caseFoldAscii: native.caseFoldAscii,
   fastHash: native.fastHash,
   fileHash: native.fileHash,
+  hashMultipleFiles: native.hashMultipleFiles,
+  readMultipleFiles: native.readMultipleFiles,
   streamCommand: native.streamCommand,
   streamStart: native.streamStart,
   streamRead: native.streamRead,
