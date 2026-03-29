@@ -1,6 +1,7 @@
-use base64::Engine;
 use crate::create_two_files_patch;
+use base64::Engine;
 use napi::Result;
+use rayon::prelude::*;
 use regex::Regex;
 use std::collections::HashMap;
 use std::fs::File;
@@ -16,8 +17,7 @@ const BINARY_EXTENSIONS: &[&str] = &[
 ];
 const IMAGE_EXTENSIONS: &[&str] = &[
     "png", "jpg", "jpeg", "gif", "bmp", "webp", "ico", "tif", "tiff", "svg", "svgz", "avif",
-    "apng", "jxl", "heic", "heif", "raw", "cr2", "nef", "arw", "dng", "orf", "raf", "pef",
-    "x3f",
+    "apng", "jxl", "heic", "heif", "raw", "cr2", "nef", "arw", "dng", "orf", "raf", "pef", "x3f",
 ];
 const TEXT_EXTENSIONS: &[&str] = &[
     "ts", "tsx", "mts", "cts", "mtsx", "ctsx", "js", "jsx", "mjs", "cjs", "sh", "bash", "zsh",
@@ -153,7 +153,10 @@ pub struct GitExecResult {
 }
 
 #[napi]
-pub fn classify_read_target(path: String, hint_path: Option<String>) -> Result<ReadTargetClassification> {
+pub fn classify_read_target(
+    path: String,
+    hint_path: Option<String>,
+) -> Result<ReadTargetClassification> {
     let path_obj = Path::new(&path);
     let hint = hint_path.unwrap_or(path.clone());
     let hint_obj = Path::new(&hint);
@@ -237,7 +240,8 @@ pub fn read_attachment(path: String) -> Result<ReadAttachment> {
     }
 
     let mime = mime_type(path_obj);
-    let image = mime.starts_with("image/") && mime != "image/svg+xml" && mime != "image/vnd.fastbidsheet";
+    let image =
+        mime.starts_with("image/") && mime != "image/svg+xml" && mime != "image/vnd.fastbidsheet";
     let pdf = mime == "application/pdf";
     if !image && !pdf {
         return Ok(ReadAttachment {
@@ -335,7 +339,14 @@ pub fn git_status(root: String) -> Result<Vec<GitStatusEntry>> {
 
     let untracked = run_git_lines(
         &root,
-        ["-c", "core.quotepath=false", "ls-files", "--others", "--exclude-standard"].as_slice(),
+        [
+            "-c",
+            "core.quotepath=false",
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+        ]
+        .as_slice(),
     )?;
     for item in count_untracked_lines(root.clone(), untracked)? {
         out.push(GitStatusEntry {
@@ -348,7 +359,15 @@ pub fn git_status(root: String) -> Result<Vec<GitStatusEntry>> {
 
     let deleted = run_git_lines(
         &root,
-        ["-c", "core.quotepath=false", "diff", "--name-only", "--diff-filter=D", "HEAD"].as_slice(),
+        [
+            "-c",
+            "core.quotepath=false",
+            "diff",
+            "--name-only",
+            "--diff-filter=D",
+            "HEAD",
+        ]
+        .as_slice(),
     )?;
     for path in deleted {
         out.push(GitStatusEntry {
@@ -364,27 +383,18 @@ pub fn git_status(root: String) -> Result<Vec<GitStatusEntry>> {
 
 #[napi]
 pub fn read_diff_snapshot(root: String, file: String) -> Result<ReadDiffSnapshot> {
-    let unstaged = run_git_text(
-        &root,
-        ["diff", "--", file.as_str()].as_slice(),
-    )?;
+    let unstaged = run_git_text(&root, ["diff", "--", file.as_str()].as_slice())?;
     let has_unstaged = !unstaged.trim().is_empty();
     let head_spec = format!("HEAD:{file}");
     if has_unstaged {
-        let original = run_git_text(
-            &root,
-            ["show", head_spec.as_str()].as_slice(),
-        )?;
+        let original = run_git_text(&root, ["show", head_spec.as_str()].as_slice())?;
         return Ok(ReadDiffSnapshot {
             has_diff: true,
             original,
         });
     }
 
-    let staged = run_git_text(
-        &root,
-        ["diff", "--staged", "--", file.as_str()].as_slice(),
-    )?;
+    let staged = run_git_text(&root, ["diff", "--staged", "--", file.as_str()].as_slice())?;
     if staged.trim().is_empty() {
         return Ok(ReadDiffSnapshot {
             has_diff: false,
@@ -392,10 +402,7 @@ pub fn read_diff_snapshot(root: String, file: String) -> Result<ReadDiffSnapshot
         });
     }
 
-    let original = run_git_text(
-        &root,
-        ["show", head_spec.as_str()].as_slice(),
-    )?;
+    let original = run_git_text(&root, ["show", head_spec.as_str()].as_slice())?;
     Ok(ReadDiffSnapshot {
         has_diff: true,
         original,
@@ -403,7 +410,11 @@ pub fn read_diff_snapshot(root: String, file: String) -> Result<ReadDiffSnapshot
 }
 
 #[napi]
-pub fn build_diff_patch(file: String, original: String, content: String) -> Result<DiffPatchResult> {
+pub fn build_diff_patch(
+    file: String,
+    original: String,
+    content: String,
+) -> Result<DiffPatchResult> {
     let diff = create_two_files_patch(file.clone(), file.clone(), original, content);
     let mut old_file_name = file.clone();
     let mut new_file_name = file.clone();
@@ -457,7 +468,12 @@ pub fn build_diff_patch(file: String, original: String, content: String) -> Resu
 }
 
 #[napi]
-pub fn snapshot_diff_full(git_dir: String, work_tree: String, from: String, to: String) -> Result<Vec<SnapshotDiffEntry>> {
+pub fn snapshot_diff_full(
+    git_dir: String,
+    work_tree: String,
+    from: String,
+    to: String,
+) -> Result<Vec<SnapshotDiffEntry>> {
     let git_config_global = std::env::var("GIT_CONFIG_GLOBAL").ok();
     let run = |args: Vec<String>| -> Result<GitExecResult> {
         run_git_exec(
@@ -485,7 +501,11 @@ pub fn snapshot_diff_full(git_dir: String, work_tree: String, from: String, to: 
     ];
     let status_out = run(status_args)?;
     let mut status = HashMap::<String, String>::new();
-    for line in status_out.stdout.lines().filter(|line| !line.trim().is_empty()) {
+    for line in status_out
+        .stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+    {
         let mut parts = line.splitn(2, '\t');
         let code = parts.next().unwrap_or_default();
         let file = parts.next().unwrap_or_default();
@@ -519,7 +539,11 @@ pub fn snapshot_diff_full(git_dir: String, work_tree: String, from: String, to: 
     let numstat_out = run(numstat_args)?;
 
     let mut out = Vec::<SnapshotDiffEntry>::new();
-    for line in numstat_out.stdout.lines().filter(|line| !line.trim().is_empty()) {
+    for line in numstat_out
+        .stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+    {
         let mut parts = line.splitn(3, '\t');
         let additions = parts.next().unwrap_or_default();
         let deletions = parts.next().unwrap_or_default();
@@ -570,7 +594,9 @@ pub fn snapshot_diff_full(git_dir: String, work_tree: String, from: String, to: 
 pub fn resolve_git_dir(root: String) -> Result<Option<String>> {
     let mut cmd = Command::new("git");
     cmd.args(["rev-parse", "--git-dir"]).current_dir(&root);
-    let output = cmd.output().map_err(|e| napi::Error::from_reason(e.to_string()))?;
+    let output = cmd
+        .output()
+        .map_err(|e| napi::Error::from_reason(e.to_string()))?;
     if !output.status.success() {
         return Ok(None);
     }
@@ -649,9 +675,8 @@ pub fn read_file_window(
     let mut has_more_lines = false;
     let mut total_lines = 0i32;
     let mut buf = Vec::<u8>::new();
-    let mut reader = BufReader::new(
-        File::open(path).map_err(|e| napi::Error::from_reason(e.to_string()))?,
-    );
+    let mut reader =
+        BufReader::new(File::open(path).map_err(|e| napi::Error::from_reason(e.to_string()))?);
 
     loop {
         buf.clear();
@@ -720,9 +745,7 @@ pub fn read_dir_window(path: String, offset: Option<i32>, limit: Option<i32>) ->
             let name = item.file_name().to_string_lossy().to_string();
             let file_type = item.file_type().ok();
             let is_dir = file_type.map(|t| t.is_dir()).unwrap_or(false)
-                || file_type
-                    .map(|t| t.is_symlink())
-                    .unwrap_or(false)
+                || file_type.map(|t| t.is_symlink()).unwrap_or(false)
                     && std::fs::metadata(item.path())
                         .map(|m| m.is_dir())
                         .unwrap_or(false);
@@ -750,6 +773,49 @@ pub fn read_dir_window(path: String, offset: Option<i32>, limit: Option<i32>) ->
         truncated,
         next_offset,
     })
+}
+
+#[napi(object)]
+pub struct ReadResult {
+    pub path: String,
+    pub content: Option<String>,
+    pub error: Option<String>,
+}
+
+#[napi]
+pub fn read_multiple_files(paths: Vec<String>, max_bytes: Option<i32>) -> Vec<ReadResult> {
+    let max_bytes = max_bytes.unwrap_or(100 * 1024) as usize;
+    paths
+        .into_par_iter()
+        .map(|path| {
+            let path_obj = Path::new(&path);
+            if is_binary_by_extension(path_obj) {
+                return ReadResult {
+                    path,
+                    content: None,
+                    error: Some("binary file".to_string()),
+                };
+            }
+            match std::fs::read(&path) {
+                Ok(mut bytes) => {
+                    if bytes.len() > max_bytes {
+                        bytes.truncate(max_bytes);
+                    }
+                    let content = String::from_utf8_lossy(&bytes).to_string();
+                    ReadResult {
+                        path,
+                        content: Some(content),
+                        error: None,
+                    }
+                }
+                Err(e) => ReadResult {
+                    path,
+                    content: None,
+                    error: Some(e.to_string()),
+                },
+            }
+        })
+        .collect()
 }
 
 fn ext(path: &Path) -> String {
@@ -863,7 +929,10 @@ fn should_encode(mime_type: &str) -> bool {
         return false;
     }
     let top = mime.split('/').next().unwrap_or_default();
-    matches!(top, "image" | "audio" | "video" | "font" | "model" | "multipart")
+    matches!(
+        top,
+        "image" | "audio" | "video" | "font" | "model" | "multipart"
+    )
 }
 
 fn run_git_lines(root: &str, args: &[&str]) -> Result<Vec<String>> {
@@ -877,7 +946,9 @@ fn run_git_lines(root: &str, args: &[&str]) -> Result<Vec<String>> {
 fn run_git_text(root: &str, args: &[&str]) -> Result<String> {
     let mut cmd = Command::new("git");
     cmd.args(args).current_dir(root);
-    let output = cmd.output().map_err(|e| napi::Error::from_reason(e.to_string()))?;
+    let output = cmd
+        .output()
+        .map_err(|e| napi::Error::from_reason(e.to_string()))?;
     if !output.status.success() {
         return Ok(String::new());
     }
@@ -903,7 +974,9 @@ fn run_git_exec(
     if let Some(item) = git_config_global {
         cmd.env("GIT_CONFIG_GLOBAL", item);
     }
-    let output = cmd.output().map_err(|e| napi::Error::from_reason(e.to_string()))?;
+    let output = cmd
+        .output()
+        .map_err(|e| napi::Error::from_reason(e.to_string()))?;
     let code = output.status.code().unwrap_or(1);
     Ok(GitExecResult {
         exit_code: code,
@@ -915,8 +988,7 @@ fn run_git_exec(
 fn hunk_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
-            .expect("valid read hunk regex")
+        Regex::new(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@").expect("valid read hunk regex")
     })
 }
 

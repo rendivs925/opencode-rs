@@ -1,4 +1,5 @@
 use napi::Result;
+use rayon::prelude::*;
 use xxhash_rust::xxh3::xxh3_64;
 
 pub(crate) fn hash_bytes(bytes: &[u8]) -> u64 {
@@ -14,6 +15,32 @@ pub fn fast_hash(content: String) -> String {
 pub fn file_hash(path: String) -> Result<String> {
     let bytes = std::fs::read(path).map_err(|err| napi::Error::from_reason(err.to_string()))?;
     Ok(format!("{:016x}", hash_bytes(&bytes)))
+}
+
+#[napi(object)]
+pub struct HashResult {
+    pub path: String,
+    pub hash: Option<String>,
+    pub error: Option<String>,
+}
+
+#[napi]
+pub fn hash_multiple_files(paths: Vec<String>) -> Vec<HashResult> {
+    paths
+        .into_par_iter()
+        .map(|path| match std::fs::read(&path) {
+            Ok(bytes) => HashResult {
+                path,
+                hash: Some(format!("{:016x}", hash_bytes(&bytes))),
+                error: None,
+            },
+            Err(e) => HashResult {
+                path,
+                hash: None,
+                error: Some(e.to_string()),
+            },
+        })
+        .collect()
 }
 
 #[cfg(test)]
