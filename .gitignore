@@ -23,6 +23,9 @@ target
 .scripts
 .direnv/
 
+# External repositories
+ai-mem/
+
 # Local dev files
 opencode-dev
 logs/
