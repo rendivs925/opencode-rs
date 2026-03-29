@@ -122,6 +122,26 @@ If you're interested in contributing to OpenCode, please read our [contributing 
 
 If you are working on a project that's related to OpenCode and is using "opencode" as part of its name, for example "opencode-dashboard" or "opencode-mobile", please add a note to your README to clarify that it is not built by the OpenCode team and is not affiliated with us in any way.
 
+### Plugins
+
+OpenCode supports optional plugins. Add them to your `~/.opencode.json`:
+
+```json
+{
+  "plugin": ["ai-mem"]
+}
+```
+
+#### ai-mem
+
+[ai-mem](https://github.com/anomalyco/opencode/tree/dev/ai-mem) is a brain-inspired persistent memory system that provides:
+
+- ACT-R activation for memory salience
+- Spreading activation for associative retrieval
+- Automatic memory consolidation and pruning
+
+Enable by adding `"ai-mem"` to the plugin list.
+
 ### FAQ
 
 #### How is this different from Claude Code?
