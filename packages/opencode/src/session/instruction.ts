@@ -8,6 +8,7 @@ import { Flag } from "@/flag/flag"
 import { Log } from "../util/log"
 import { Glob } from "../util/glob"
 import type { MessageV2 } from "./message-v2"
+import { readMultipleFiles } from "@/core/native"
 
 const log = Log.create({ service: "instruction" })
 
@@ -118,9 +119,13 @@ export namespace InstructionPrompt {
     const config = await Config.get()
     const paths = await systemPaths()
 
-    const files = Array.from(paths).map(async (p) => {
-      const content = await Filesystem.readText(p).catch(() => "")
-      return content ? "Instructions from: " + p + "\n" + content : ""
+    const filePaths = Array.from(paths)
+    const fileResults = readMultipleFiles(filePaths)
+    const files = fileResults.map((result) => {
+      if (result.content) {
+        return "Instructions from: " + result.path + "\n" + result.content
+      }
+      return ""
     })
 
     const urls: string[] = []
@@ -138,7 +143,7 @@ export namespace InstructionPrompt {
         .then((x) => (x ? "Instructions from: " + url + "\n" + x : "")),
     )
 
-    return Promise.all([...files, ...fetches]).then((result) => result.filter(Boolean))
+    return [...files, ...(await Promise.all(fetches))].filter(Boolean)
   }
 
   export function loaded(messages: MessageV2.WithParts[]) {
