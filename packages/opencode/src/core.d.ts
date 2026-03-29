@@ -147,12 +147,7 @@ declare module "@opencode-ai/core" {
       index?: string
     }
   }
-  export function createTwoFilesPatch(
-    oldPath: string,
-    newPath: string,
-    oldContent: string,
-    newContent: string,
-  ): string
+  export function createTwoFilesPatch(oldPath: string, newPath: string, oldContent: string, newContent: string): string
   export function diffLines(
     oldContent: string,
     newContent: string,
@@ -181,6 +176,18 @@ declare module "@opencode-ai/core" {
   export function caseFoldAscii(text: string): string
   export function fastHash(content: string): string
   export function fileHash(path: string): string
+  export interface HashResult {
+    path: string
+    hash: string | null
+    error: string | null
+  }
+  export function hashMultipleFiles(paths: string[]): HashResult[]
+  export interface ReadResult {
+    path: string
+    content: string | null
+    error: string | null
+  }
+  export function readMultipleFiles(paths: string[], maxBytes?: number): ReadResult[]
   export function streamCommand(config: {
     command: string
     args: string[]

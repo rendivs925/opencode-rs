@@ -331,7 +331,14 @@ export const snapshotDiffFull = core.snapshotDiffFull as (
   workTree: string,
   from: string,
   to: string,
-) => { file: string; before: string; after: string; additions: number; deletions: number; status: "added" | "deleted" | "modified" }[]
+) => {
+  file: string
+  before: string
+  after: string
+  additions: number
+  deletions: number
+  status: "added" | "deleted" | "modified"
+}[]
 
 export const buildDiffPatch = core.buildDiffPatch as (
   file: string,
@@ -396,6 +403,20 @@ export const caseFoldAscii = core.caseFoldAscii as (text: string) => string
 
 export const fastHash = core.fastHash as (content: string) => string
 export const fileHash = core.fileHash as (path: string) => string
+
+export interface HashResult {
+  path: string
+  hash: string | null
+  error: string | null
+}
+export const hashMultipleFiles = core.hashMultipleFiles as (paths: string[]) => HashResult[]
+
+export interface ReadResult {
+  path: string
+  content: string | null
+  error: string | null
+}
+export const readMultipleFiles = core.readMultipleFiles as (paths: string[], maxBytes?: number) => ReadResult[]
 
 export const streamCommand = core.streamCommand as (config: {
   command: string
